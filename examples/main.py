@@ -2643,7 +2643,7 @@ async def update_todo(todo_id: str, edited_text: str):
     if not item:
         raise ValueError(f"Todo with ID {todo_id} not found")
     
-        item.text = edited_text
+    item.text = edited_text
     
     yield update_fragments(item, f"#todo-{item.id}", "outer")
     stats = calculate_todo_stats(todos_store.items, todos_store.lifetime_completed_count)
