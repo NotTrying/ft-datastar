@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datastar Lab &middot; __BACKEND__</title>
+<script type="module" src="/datastar.js"></script>
+<style>
+  :root { color-scheme: light dark; --bg:#fbfbfa; --fg:#1a1a19; --mut:#6b6b68; --line:#e2e2df; --card:#fff; --acc:#2a6df4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16161a; --fg:#ededf0; --mut:#9a9aa4; --line:#2c2c33; --card:#1e1e24; --acc:#6f9bff; }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:32px 20px 80px }
+  h1 { font-size:22px; margin:0 0 4px }
+  .sub { color:var(--mut); font-size:13px; margin:0 0 28px }
+  .badge { display:inline-block; font:11px ui-monospace,monospace; background:var(--acc); color:#fff; padding:2px 7px; border-radius:99px; vertical-align:2px }
+  section { border:1px solid var(--line); background:var(--card); border-radius:10px; padding:18px; margin-bottom:18px }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--mut); margin:0 0 14px; font-weight:600 }
+  button { font:inherit; padding:7px 13px; border-radius:7px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer }
+  button:hover { border-color:var(--acc) }
+  button.primary { background:var(--acc); color:#fff; border-color:var(--acc) }
+  input, textarea { font:inherit; width:100%; padding:8px 10px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--fg) }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+  .count { font:600 26px ui-monospace,monospace; min-width:2.5ch; display:inline-block }
+  .item { display:flex; gap:11px; align-items:flex-start; padding:11px 0; border-top:1px solid var(--line) }
+  .item:first-child { border-top:0 }
+  .item .who { font-weight:600; font-size:13px }
+  .item .txt { color:var(--mut); font-size:13px }
+  .item.ok .who::after { content:" approved"; color:#12a150; font-weight:400; font-size:11px }
+  .grow { flex:1 }
+  .mut { color:var(--mut); font-size:12px }
+  .bar { height:7px; background:var(--line); border-radius:99px; overflow:hidden; margin-top:9px }
+  .bar > i { display:block; height:100%; background:var(--acc); transition:width .25s }
+  [data-indicator-loading] { opacity:.55 }
+  .spin { display:none } .on .spin { display:inline }
+</style>
+</head>
+<body data-signals="{count: 0, query: '', author: '', text: '', searching: false, importing: false}">
+<main>
+
+  <h1>Datastar Lab <span class="badge">__BACKEND__</span></h1>
+  <p class="sub">One HTML file. No build step, no node_modules, no hydration. Everything below is <code>data-*</code> attributes.</p>
+
+  <!-- 1. Pure client reactivity: never touches the server -->
+  <section>
+    <h2>1 &middot; Client-only signals</h2>
+    <div class="row">
+      <button data-on:click="$count--">&minus;</button>
+      <span class="count" data-text="$count"></span>
+      <button data-on:click="$count++">+</button>
+      <span class="mut" data-show="$count > 4">&larr; still zero JS written by you</span>
+    </div>
+  </section>
+
+  <!-- 2. Debounced server search -> SSE patch of #list -->
+  <section>
+    <h2>2 &middot; Live search <span class="mut" data-show="$searching">searching&hellip;</span></h2>
+    <input data-bind:query
+           data-indicator:searching
+           data-on:input__debounce.300ms="@get('/search')"
+           placeholder="Type to filter testimonials&hellip;">
+  </section>
+
+  <!-- 3. Server round-trips that patch the same list -->
+  <section>
+    <h2>3 &middot; Add &amp; mutate</h2>
+    <form data-on:submit__prevent="@post('/items')">
+      <div class="row" style="margin-bottom:8px">
+        <input class="grow" style="max-width:180px" data-bind:author placeholder="Name">
+        <input class="grow" data-bind:text placeholder="What did they say?">
+        <button class="primary" type="submit" data-attr:disabled="!$author || !$text">Add</button>
+      </div>
+    </form>
+
+    __LIST__
+  </section>
+
+  <!-- 4. The thing that is genuinely hard elsewhere: one request, many pushes -->
+  <section>
+    <h2>4 &middot; Streaming job (one request, many patches)</h2>
+    <button data-on:click="@get('/import')" data-attr:disabled="$importing">Run import</button>
+    <div id="progress" class="mut" style="margin-top:10px">Idle.</div>
+  </section>
+
+</main>
+</body>
+</html>

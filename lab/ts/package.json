@@ -1,0 +1,6 @@
+{
+  "name": "datastar-lab-ts",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "bun server.ts" }
+}
