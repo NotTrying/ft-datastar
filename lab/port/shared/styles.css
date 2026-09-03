@@ -91,3 +91,21 @@ nav.top{display:flex;justify-content:space-between;align-items:center;gap:12px;
   padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:4px}
 nav.top .who{font-size:13px;color:var(--mut)}
 nav.top form{display:inline}
+
+/* handles + scan feed */
+nav.top .links a{color:var(--mut);text-decoration:none;margin-right:14px;font-size:14px}
+nav.top .links a.on{color:var(--fg);font-weight:600}
+nav.top .who{display:flex;align-items:center;gap:10px}
+.handle .av{font-weight:700}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:0 0 12px;font-weight:600}
+.scan-feed{display:flex;flex-direction:column;gap:8px;margin:12px 0}
+.scan-row{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border-radius:7px;
+  border:1px solid var(--line);background:var(--bg);font-size:13px;
+  animation:slidein .22s ease-out}
+@keyframes slidein{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.scan-row .av.sm{width:26px;height:26px;font-size:12px}
+.scan-row .verdict{font-size:12px;white-space:nowrap;color:var(--mut)}
+.scan-row.new{border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+.scan-row.new .verdict{color:var(--ok)}
+.scan-row.capped{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+.scan-row.capped .verdict{color:var(--warn)}

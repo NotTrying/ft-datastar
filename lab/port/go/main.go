@@ -62,7 +62,8 @@ func (s *sse) signals(j string) {
 // ---------- signals in ----------
 
 type incoming struct {
-	Tab string `json:"tab"`
+	Tab    string `json:"tab"`
+	Handle string `json:"handle"`
 	ManualInput
 }
 
@@ -273,6 +274,63 @@ func main() {
 			redraw(s, uid, in.Tab)
 		}
 	}))
+
+	// ---- handles ----
+
+	mux.HandleFunc("GET /handles", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
+		lim := store.LimitsFor(uid)
+		page(w, "handles.html",
+			"__EMAIL__", esc(store.EmailFor(uid)),
+			"__PLAN__", RenderPlan(store.CountHandles(uid), lim),
+			"__HANDLES__", RenderHandles(store.ListHandles(uid), lim))
+	}))
+
+	mux.HandleFunc("POST /handles", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
+		in := readSignals(r)
+		s, ok := newSSE(w)
+		if !ok {
+			return
+		}
+		name, verr := ValidateHandle(in.Handle)
+		if verr != nil {
+			s.patch(RenderHandleMsg("err", esc(verr.Error())))
+			return
+		}
+		lim := store.LimitsFor(uid)
+		if !canUse(lim.MaxHandles, store.CountHandles(uid)) {
+			s.patch(RenderHandleMsg("err",
+				"Handle limit reached. Upgrade your plan to monitor more handles."))
+			return
+		}
+		switch err := store.AddHandle(uid, name); {
+		case err == ErrDuplicate:
+			s.patch(RenderHandleMsg("err", "You are already monitoring this handle"))
+			return
+		case err != nil:
+			s.patch(RenderHandleMsg("err", "Could not add that handle. Try again."))
+			return
+		}
+		s.patch(RenderHandleMsg("ok", "Now monitoring @"+esc(name)+"."))
+		s.signals(`{handle: ''}`)
+		s.patch(RenderPlan(store.CountHandles(uid), lim))
+		s.patch(RenderHandles(store.ListHandles(uid), lim))
+	}))
+
+	mux.HandleFunc("DELETE /handles/{id}", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
+		if !store.DeleteHandle(uid, r.PathValue("id")) {
+			http.Error(w, "not found", 404)
+			return
+		}
+		lim := store.LimitsFor(uid)
+		if s, ok := newSSE(w); ok {
+			s.patch(RenderHandleMsg("ok", "Handle removed."))
+			s.patch(RenderPlan(store.CountHandles(uid), lim))
+			s.patch(RenderHandles(store.ListHandles(uid), lim))
+		}
+	}))
+
+	// POST, not GET: a GET is a CORS-simple request, and this mutates.
+	mux.HandleFunc("POST /scan", requireUser(store, handleScan(store)))
 
 	log.Printf("social-proof (Datastar/Go) on http://localhost:%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))

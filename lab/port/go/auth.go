@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS app_user (
   id         TEXT PRIMARY KEY,
   email      TEXT NOT NULL UNIQUE,
   pw_hash    TEXT NOT NULL,
+  plan       TEXT NOT NULL DEFAULT 'free',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS session (

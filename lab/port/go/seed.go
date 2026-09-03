@@ -13,6 +13,9 @@ func SeedAccount(s *Store) string {
 	if err != nil {
 		panic(err)
 	}
+	// Pro so the handle and testimonial caps are exercised but not in the way.
+	_, _ = s.db.Exec(`UPDATE app_user SET plan = 'pro' WHERE id = ?`, id)
+	_ = s.AddHandle(id, "acmetools")
 	return id
 }
 

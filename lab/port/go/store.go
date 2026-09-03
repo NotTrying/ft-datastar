@@ -29,6 +29,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS testimonial (
   id            TEXT PRIMARY KEY,
   user_id       TEXT NOT NULL,
+  handle_id     TEXT,
   source        TEXT NOT NULL,
   platform      TEXT NOT NULL,
   post_id       TEXT NOT NULL,
@@ -57,6 +58,9 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(authSchema); err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(handlesSchema); err != nil {
 		return nil, err
 	}
 	return &Store{db}, nil

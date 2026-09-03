@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monitored Handles &middot; Social Proof</title>
+<script type="module" src="/datastar.js"></script>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body data-signals="{handle: '', _scanning: false, _busy: false}">
+<div class="shell">
+
+  <nav class="top">
+    <span class="links"><a href="/">Dashboard</a> <a href="/handles" class="on">Handles</a></span>
+    <span class="who">Signed in as <strong>__EMAIL__</strong>
+      <button class="btn sm" data-on:click="@post('/logout')">Sign out</button></span>
+  </nav>
+
+  <header>
+    <h1>Monitored Handles</h1>
+    <p class="muted">Add X handles to monitor for mentions and testimonials
+      <span class="badge">__BACKEND__</span></p>
+  </header>
+
+  <section class="card pad">
+    <div id="handle-msg"></div>
+    <form data-on:submit__prevent="@post('/handles')" data-indicator:_busy>
+      <div class="row">
+        <label class="grow"><span>X handle</span>
+          <input type="text" maxlength="50" data-bind:handle placeholder="@acmetools"></label>
+        <button type="submit" class="btn primary" data-attr:disabled="$_busy || !$handle"
+                data-text="$_busy ? 'Adding…' : 'Add handle'">Add handle</button>
+      </div>
+    </form>
+    __PLAN__
+  </section>
+
+  __HANDLES__
+
+  <!--
+    The scan feed. One request fills all of this: a status line that keeps
+    updating, a row appended per mention as it is decided (mode: append), and
+    a summary at the end. No WebSocket, no store, no polling.
+  -->
+  <section class="card pad">
+    <h2>Scan activity</h2>
+    <div id="scan-panel"><p class="muted small">Run a scan to see it here.</p></div>
+  </section>
+
+</div>
+</body>
+</html>

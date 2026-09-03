@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { Store, STATUSES, Duplicate, type Status } from "./store.ts";
 import { validateManualTestimonial } from "./validate.ts";
 import { renderStats, renderTabs, renderList, renderMsg, esc } from "./render.ts";
+import { canUse, limitsFor, validateHandle, renderHandles, renderHandleMsg, renderPlan } from "./handles.ts";
+import { searchMentions, scanRow } from "./scan.ts";
 import {
   COOKIE, SESSION_TTL_MS, hashPassword, verifyPassword, tokenHash, newToken,
   sessionCookie, clearCookie, readCookie, isDatastar, sameOrigin, sseRedirect,
@@ -33,10 +35,12 @@ class SSE {
 // Unlike a Go http.ResponseWriter, a Response is constructed with its headers,
 // so there is no way to start the stream before setting a cookie. The
 // header-ordering bug the Go port hit is unrepresentable here.
-const stream = (fn: (s: SSE) => void, headers: Record<string, string> = {}) =>
+const stream = (fn: (s: SSE) => void | Promise<void>, headers: Record<string, string> = {}) =>
   new Response(new ReadableStream({
-    start(c) { const s = new SSE(c); try { fn(s); } finally { c.close(); } },
+    async start(c) { const s = new SSE(c); try { await fn(s); } finally { try { c.close(); } catch {} } },
   }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache", ...headers } });
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function redraw(s: SSE, uid: string, tab: Status) {
   const c = store.counts(uid);
@@ -148,6 +152,115 @@ async function handle(req: Request): Promise<Response> {
       });
     }
 
+    // ---- handles ----
+
+    if (p === "/handles" && req.method === "GET") {
+      const lim = limitsFor(store.planFor(uid));
+      return page("handles.html", {
+        __EMAIL__: esc(store.emailFor(uid)),
+        __PLAN__: renderPlan(store.countHandles(uid), lim),
+        __HANDLES__: renderHandles(store.listHandles(uid)),
+      });
+    }
+
+    if (p === "/handles" && req.method === "POST") {
+      const v = validateHandle(String(input.handle ?? ""));
+      if (!v.ok) return stream((s) => s.patch(renderHandleMsg("err", esc(v.error))));
+      const lim = limitsFor(store.planFor(uid));
+      if (!canUse(lim.maxHandles, store.countHandles(uid)))
+        return stream((s) => s.patch(renderHandleMsg("err",
+          "Handle limit reached. Upgrade your plan to monitor more handles.")));
+      try {
+        store.addHandle(uid, v.handle);
+      } catch (e) {
+        const msg = e instanceof Duplicate
+          ? "You are already monitoring this handle" : "Could not add that handle. Try again.";
+        return stream((s) => s.patch(renderHandleMsg("err", msg)));
+      }
+      return stream((s) => {
+        s.patch(renderHandleMsg("ok", `Now monitoring @${esc(v.handle)}.`));
+        s.signals(`{handle: ''}`);
+        s.patch(renderPlan(store.countHandles(uid), lim));
+        s.patch(renderHandles(store.listHandles(uid)));
+      });
+    }
+
+    const hm = p.match(/^\/handles\/([^/]+)$/);
+    if (hm && req.method === "DELETE") {
+      if (!store.deleteHandle(uid, decodeURIComponent(hm[1]!)))
+        return new Response("not found", { status: 404 });
+      const lim = limitsFor(store.planFor(uid));
+      return stream((s) => {
+        s.patch(renderHandleMsg("ok", "Handle removed."));
+        s.patch(renderPlan(store.countHandles(uid), lim));
+        s.patch(renderHandles(store.listHandles(uid)));
+      });
+    }
+
+    // POST, not GET: a GET is a CORS-simple request, and this mutates.
+    if (p === "/scan" && req.method === "POST") {
+      const h = store.handleById(uid, url.searchParams.get("id") ?? "");
+      if (!h) return new Response("handle not found", { status: 404 });
+      const lim = limitsFor(store.planFor(uid));
+
+      return stream(async (s) => {
+        // The whole panel is replaced first so a repeat scan starts clean.
+        s.patch(`<div id="scan-panel"><div id="scan-status" class="muted small">Starting…</div>` +
+          `<div id="scan-feed" class="scan-feed"></div><div id="scan-summary"></div></div>`);
+        s.signals(`{_scanning: true}`);
+        try {
+          if (!canUse(lim.scansPerMonth, store.scansThisMonth(uid))) {
+            s.patch(`<div id="scan-status" class="alert err">Monthly scan limit reached. ` +
+              `Upgrade your plan for more scans.</div>`);
+            return;
+          }
+          store.logScan(uid, h.id);
+          const step = (msg: string) =>
+            s.patch(`<div id="scan-status" class="muted small">${esc(msg)}</div>`);
+
+          step(`Searching X for mentions of @${h.handle}…`);
+          await sleep(500);
+          if (req.signal?.aborted) return;
+
+          const { mentions, newestId } = searchMentions(h.handle, h.last_post_id);
+          const known = store.knownPostIds(uid, "x");
+          let stored = store.total(uid);
+          step(`Found ${mentions.length} mentions. Checking them against what you already have…`);
+
+          let added = 0, skippedDupe = 0, skippedCap = 0;
+          for (const [i, m] of mentions.entries()) {
+            await sleep(320);
+            if (req.signal?.aborted) return; // the user navigated away; stop scanning
+
+            let verdict: string, cls: string;
+            if (known.has(m.postId)) { verdict = "already stored"; cls = "dupe"; skippedDupe++; }
+            else if (!canUse(lim.maxTestimonials, stored)) {
+              // Insert up to the remaining room and report the rest as
+              // skipped, rather than failing the whole scan.
+              verdict = "over plan cap"; cls = "capped"; skippedCap++;
+            } else {
+              try { store.insertScanned(uid, h.id, m); verdict = "added to Pending"; cls = "new"; added++; stored++; }
+              catch { verdict = "already stored"; cls = "dupe"; skippedDupe++; }
+            }
+
+            // mode append: each row joins the feed as it is decided.
+            s.patch(scanRow(m, verdict, cls), "selector #scan-feed", "mode append");
+            s.patch(`<div id="scan-status" class="muted small">Checked ${i + 1} of ${mentions.length}…` +
+              `<div class="bar"><i style="width:${((i + 1) * 100) / mentions.length}%"></i></div></div>`);
+          }
+
+          store.touchHandle(h.id, newestId);
+          let summary = `${mentions.length} found &middot; ${added} new &middot; ${skippedDupe} already stored`;
+          if (skippedCap > 0) summary += ` &middot; ${skippedCap} skipped (plan cap)`;
+          s.patch(`<div id="scan-status" class="muted small">Done.</div>`);
+          s.patch(`<div id="scan-summary"><div class="alert ok" role="status">${summary}</div></div>`);
+          s.patch(renderHandles(store.listHandles(uid)));
+        } finally {
+          s.signals(`{_scanning: false}`);
+        }
+      });
+    }
+
     const m = p.match(/^\/testimonials\/([^/]+)$/);
     if (m) {
       const id = decodeURIComponent(m[1]!);
@@ -176,6 +289,9 @@ async function seed(): Promise<string> {
     store.createUser(id, "owner@example.com", await hashPassword("correct-horse-battery"));
     user = store.findUser("owner@example.com")!;
   }
+  // Pro so the handle and testimonial caps are exercised but not in the way.
+  store.setPlan(user.id, "pro");
+  try { store.addHandle(user.id, "acmetools"); } catch { /* already there */ }
   if (store.total(user.id) > 0) return user.id;
   const d = (s: string) => new Date(s);
   const rows: [string, string, string, string, string, string, Date, Status][] = [

@@ -9,8 +9,12 @@ times, so the comparison is like-for-like instead of vibes.
 | **2. Datastar + Go** | `go/` — stdlib routing, SQLite, SSE |
 | **3. Datastar + TypeScript** | `ts/` — Web-standard fetch handler, `bun:sqlite`, SSE |
 
-Both ports share **one** `shared/dashboard.html`. Both are verified by
-`verify-port.mjs`, which drives a real browser through 12 assertions: seeded counts,
+Both ports share the HTML in `shared/`. Three browser-driven suites cover them —
+`verify-port.mjs` (dashboard), `verify-auth.mjs` (sessions, see [AUTH.md](AUTH.md)) and
+`verify-scan.mjs` (handles + streaming scan, see [README-SCAN.md](README-SCAN.md)) —
+**39 assertions in total, all passing on both backends.**
+
+`verify-port.mjs` drives a real browser through 13 assertions: seeded counts,
 tab switching, validation failures, form-state retention, successful add, duplicate
 rejection, approve, and remove. **Both pass all 12 with no console errors.**
 
@@ -32,6 +36,8 @@ Everything the original dashboard does, minus auth (out of scope — every reque
 - duplicate rejection via the unique index on `(user_id, platform, post_id)`
 - approve / dismiss / remove
 - both empty states
+- sessions, login, logout and CSRF defences ([AUTH.md](AUTH.md))
+- monitored handles, plan limits, and a **streaming** scan ([README-SCAN.md](README-SCAN.md))
 
 ## The numbers
 
