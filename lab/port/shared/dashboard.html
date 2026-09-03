@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard &middot; Social Proof</title>
+<script type="module" src="/datastar.js"></script>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<!--
+  Signals hold UI state only. Testimonials never live in a signal — the server
+  owns them and ships HTML. Signals prefixed `_` are local-only: Datastar does
+  not send them to the server, so `_addOpen` stays out of every request.
+-->
+<body data-signals="{tab: 'pending', _addOpen: false, content: '', authorName: '', authorHandle: '', sourceUrl: '', postedAt: '', _saving: false}">
+<div class="shell">
+
+  <header>
+    <h1>Dashboard</h1>
+    <p class="muted">Your social proof inbox <span class="badge">__BACKEND__</span></p>
+  </header>
+
+  <!-- Add a testimonial by hand. Collapsible; the panel state is purely local. -->
+  <section class="card">
+    <button type="button" class="disclosure"
+            data-on:click="$_addOpen = !$_addOpen"
+            data-attr:aria-expanded="$_addOpen"
+            aria-controls="add-panel">
+      <span>
+        <strong>Add a testimonial</strong>
+        <span class="muted block">Paste a review from anywhere — Google, Facebook, an email you were sent.</span>
+      </span>
+      <span class="chev" data-class:open="$_addOpen">&#9662;</span>
+    </button>
+
+    <div id="add-panel" class="panel" data-show="$_addOpen">
+      <div id="form-msg"></div>
+
+      <form data-on:submit__prevent="@post('/testimonials')" data-indicator:_saving>
+        <label>
+          <span>What they said</span>
+          <textarea rows="3" maxlength="2000" data-bind:content
+                    placeholder="Sold our house in nine days and answered the phone every time."></textarea>
+        </label>
+
+        <div class="grid2">
+          <label>
+            <span>Their name</span>
+            <input type="text" maxlength="100" data-bind:author-name placeholder="Jane Smith">
+          </label>
+          <label>
+            <span>Their handle <em>(optional)</em></span>
+            <input type="text" maxlength="100" data-bind:author-handle placeholder="@janesmith">
+          </label>
+        </div>
+
+        <label>
+          <span>Link to the original</span>
+          <input type="url" maxlength="2048" data-bind:source-url placeholder="https://g.page/r/.../review">
+          <span class="hint">Required. Every quote on your wall links back to where it was said —
+            that is the part a screenshot cannot do.</span>
+        </label>
+
+        <label class="narrow">
+          <span>When <em>(optional)</em></span>
+          <input type="date" data-bind:posted-at>
+        </label>
+
+        <div class="row">
+          <button type="submit" class="btn primary" data-attr:disabled="$_saving"
+                  data-text="$_saving ? 'Adding…' : 'Add testimonial'">Add testimonial</button>
+          <span class="muted small">It lands in Pending — nothing reaches your site until you approve it.</span>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  __STATS__
+
+  __TABS__
+
+  __LIST__
+
+</div>
+</body>
+</html>

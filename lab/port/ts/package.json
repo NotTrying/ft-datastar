@@ -1,0 +1,2 @@
+{ "name": "social-proof-datastar-ts", "private": true, "type": "module",
+  "scripts": { "dev": "bun server.ts" } }
