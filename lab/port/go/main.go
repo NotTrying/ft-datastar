@@ -62,8 +62,9 @@ func (s *sse) signals(j string) {
 // ---------- signals in ----------
 
 type incoming struct {
-	Tab    string `json:"tab"`
-	Handle string `json:"handle"`
+	Tab      string `json:"tab"`
+	Handle   string `json:"handle"`
+	WallName string `json:"wallName"`
 	ManualInput
 }
 
@@ -331,6 +332,77 @@ func main() {
 
 	// POST, not GET: a GET is a CORS-simple request, and this mutates.
 	mux.HandleFunc("POST /scan", requireUser(store, handleScan(store)))
+
+	// ---- walls (dashboard) ----
+
+	origin := os.Getenv("LAB_ORIGIN")
+	if origin == "" {
+		origin = "http://localhost:" + port
+	}
+
+	mux.HandleFunc("GET /walls", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
+		page(w, "walls.html",
+			"__EMAIL__", esc(store.EmailFor(uid)),
+			"__WALLS__", RenderWalls(store.ListWalls(uid), origin))
+	}))
+
+	mux.HandleFunc("POST /walls", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
+		in := readSignals(r)
+		s, ok := newSSE(w)
+		if !ok {
+			return
+		}
+		name := strings.TrimSpace(in.WallName)
+		if name == "" || len([]rune(name)) > 60 {
+			s.patch(RenderWallMsg("err", "Give the wall a name of up to 60 characters."))
+			return
+		}
+		id, err := store.CreateWall(uid, name)
+		if err != nil {
+			s.patch(RenderWallMsg("err", "Could not create that wall."))
+			return
+		}
+		s.patch(RenderWallMsg("ok", "Wall <code class=\"mono\">"+esc(id)+"</code> created. Paste the snippet into your site."))
+		s.signals(`{wallName: ''}`)
+		s.patch(RenderWalls(store.ListWalls(uid), origin))
+	}))
+
+	mux.HandleFunc("PATCH /walls/{id}", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
+		id := r.PathValue("id")
+		q := r.URL.Query()
+		if v := q.Get("enabled"); v != "" {
+			if !store.SetWallEnabled(uid, id, v == "true") {
+				http.Error(w, "not found", 404)
+				return
+			}
+		}
+		if q.Has("domains") {
+			// nil (blank input) means unrestricted; that distinction is
+			// load-bearing in IsOriginAllowed.
+			if !store.SetWallDomains(uid, id, ParseDomainInput(q.Get("domains"))) {
+				http.Error(w, "not found", 404)
+				return
+			}
+		}
+		if s, ok := newSSE(w); ok {
+			s.patch(RenderWalls(store.ListWalls(uid), origin))
+		}
+	}))
+
+	mux.HandleFunc("DELETE /walls/{id}", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
+		if !store.DeleteWall(uid, r.PathValue("id")) {
+			http.Error(w, "not found", 404)
+			return
+		}
+		if s, ok := newSSE(w); ok {
+			s.patch(RenderWallMsg("ok", "Wall deleted."))
+			s.patch(RenderWalls(store.ListWalls(uid), origin))
+		}
+	}))
+
+	// ---- public: anonymous visitors on someone else's website ----
+	mux.HandleFunc("GET /embed/{id}", serveEmbed(store))
+	mux.HandleFunc("GET /api/v1/walls/{id}", serveWallAPI(store))
 
 	log.Printf("social-proof (Datastar/Go) on http://localhost:%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))

@@ -19,6 +19,16 @@ export type HandleRow = {
   pending: number; approved: number;
 };
 
+export type WallRow = {
+  id: string; name: string; enabled: number; layout: string; theme: string;
+  density: string; show_dates: number; max_items: number;
+  allowed_domains: string | null; css_vars: string | null;
+};
+export type WallItemRow = {
+  id: string; platform: string; content: string; post_url: string;
+  author_handle: string | null; author_name: string | null; posted_at: number | null;
+};
+
 export class Duplicate extends Error {}
 
 const SCHEMA = `
@@ -34,6 +44,7 @@ CREATE TABLE IF NOT EXISTS testimonial (
   author_name   TEXT,
   content       TEXT NOT NULL,
   status        TEXT NOT NULL CHECK (status IN ('pending','approved','dismissed')),
+  verify_state  TEXT NOT NULL DEFAULT 'unknown',
   posted_at     INTEGER,
   created_at    INTEGER NOT NULL
 );
@@ -73,6 +84,21 @@ CREATE TABLE IF NOT EXISTS scan_log (
   user_id   TEXT NOT NULL,
   handle_id TEXT NOT NULL,
   at        INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wall (
+  id              TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  layout          TEXT NOT NULL DEFAULT 'grid',
+  theme           TEXT NOT NULL DEFAULT 'light',
+  density         TEXT NOT NULL DEFAULT 'comfortable',
+  show_dates      INTEGER NOT NULL DEFAULT 1,
+  max_items       INTEGER NOT NULL DEFAULT 12,
+  allowed_domains TEXT,
+  css_vars        TEXT,
+  created_at      INTEGER NOT NULL
 );
 `;
 
@@ -230,6 +256,56 @@ export class Store {
     return new Set(this.db.query<{ post_id: string }, [string, string]>(
       `SELECT post_id FROM testimonial WHERE user_id = ? AND platform = ?`)
       .all(userId, platform).map((r) => r.post_id));
+  }
+
+  // ---- walls ----
+  // Note the asymmetry: dashboard reads are scoped by user_id, the public
+  // read (loadWall) is not — the visitor is anonymous.
+
+  createWall(id: string, userId: string, name: string) {
+    this.db.query(`INSERT INTO wall (id, user_id, name, created_at) VALUES (?,?,?,?)`)
+      .run(id, userId, name, Date.now());
+  }
+
+  listWalls(userId: string): WallRow[] {
+    return this.db.query<WallRow, [string]>(
+      `SELECT id, name, enabled, layout, theme, density, show_dates, max_items,
+              allowed_domains, css_vars FROM wall WHERE user_id = ? ORDER BY created_at`).all(userId);
+  }
+
+  // A disabled wall is indistinguishable from a missing one.
+  loadWall(id: string): { wall: WallRow; ownerId: string } | null {
+    const row = this.db.query<WallRow & { user_id: string }, [string]>(
+      `SELECT id, user_id, name, enabled, layout, theme, density, show_dates, max_items,
+              allowed_domains, css_vars FROM wall WHERE id = ?`).get(id);
+    if (!row || !row.enabled) return null;
+    const { user_id, ...wall } = row;
+    return { wall, ownerId: user_id };
+  }
+
+  setWallEnabled(userId: string, id: string, on: boolean): boolean {
+    return this.db.query(`UPDATE wall SET enabled = ? WHERE id = ? AND user_id = ?`)
+      .run(on ? 1 : 0, id, userId).changes > 0;
+  }
+
+  setWallDomains(userId: string, id: string, domains: string[] | null): boolean {
+    return this.db.query(`UPDATE wall SET allowed_domains = ? WHERE id = ? AND user_id = ?`)
+      .run(domains === null ? null : JSON.stringify(domains), id, userId).changes > 0;
+  }
+
+  deleteWall(userId: string, id: string): boolean {
+    return this.db.query(`DELETE FROM wall WHERE id = ? AND user_id = ?`).run(id, userId).changes > 0;
+  }
+
+  // Two filters carry the product's whole claim: `approved` (the owner chose
+  // it) and verify_state != 'gone' (the original still resolves).
+  loadWallItems(ownerId: string, max: number): WallItemRow[] {
+    return this.db.query<WallItemRow, [string, number]>(`
+      SELECT id, platform, content, post_url, author_handle, author_name, posted_at
+        FROM testimonial
+       WHERE user_id = ? AND status = 'approved' AND coalesce(verify_state,'unknown') != 'gone'
+       ORDER BY posted_at DESC, created_at DESC LIMIT ?`)
+      .all(ownerId, Math.max(1, Math.min(max, 100)));
   }
 
   insertScanned(userId: string, handleId: string, m: Mention) {

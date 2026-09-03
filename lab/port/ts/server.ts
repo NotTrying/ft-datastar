@@ -6,6 +6,8 @@ import { validateManualTestimonial } from "./validate.ts";
 import { renderStats, renderTabs, renderList, renderMsg, esc } from "./render.ts";
 import { canUse, limitsFor, validateHandle, renderHandles, renderHandleMsg, renderPlan } from "./handles.ts";
 import { searchMentions, scanRow } from "./scan.ts";
+import { generateWallId, parseDomainInput, parseAllowedDomains, isOriginAllowed, parseCssVars } from "./walls.ts";
+import { renderWalls, renderWallMsg, renderWallHtml, embedHeaders, applyOverrides } from "./embed.ts";
 import {
   COOKIE, SESSION_TTL_MS, hashPassword, verifyPassword, tokenHash, newToken,
   sessionCookie, clearCookie, readCookie, isDatastar, sameOrigin, sseRedirect,
@@ -117,6 +119,48 @@ async function handle(req: Request): Promise<Response> {
       : new Response(null, { status: 302, headers: { ...headers, location: "/login" } });
   }
 
+  // ---- public: anonymous visitors on someone else's website ----
+
+  const em = p.match(/^\/embed\/([^/]+)$/);
+  if (em && req.method === "GET") {
+    const found = store.loadWall(decodeURIComponent(em[1]!));
+    // An unknown or disabled wall gets a 404 the browser renders as an empty
+    // frame. The customer's page shows nothing rather than our error.
+    if (!found) return new Response("Not found", { status: 404 });
+    const w = applyOverrides(found.wall, url.searchParams);
+    const items = store.loadWallItems(found.ownerId, w.max_items);
+    // Per-request nonce: it is what allows the single inline stylesheet and
+    // the single height script to run under an otherwise empty CSP.
+    const nonce = crypto.randomUUID().replaceAll("-", "");
+    return new Response(renderWallHtml(w, items, nonce),
+      { headers: embedHeaders(nonce, parseAllowedDomains(w.allowed_domains)) });
+  }
+
+  const am = p.match(/^\/api\/v1\/walls\/([^/]+)$/);
+  if (am && req.method === "GET") {
+    const found = store.loadWall(decodeURIComponent(am[1]!));
+    if (!found) return new Response(`{"error":"not found"}`, { status: 404 });
+    const allowed = parseAllowedDomains(found.wall.allowed_domains);
+    const origin = req.headers.get("origin");
+    if (!isOriginAllowed(origin, allowed))
+      return new Response(`{"error":"origin not allowed"}`, { status: 403 });
+    const headers: Record<string, string> = {
+      "content-type": "application/json", "cache-control": "public, max-age=60",
+    };
+    if (origin) { headers["access-control-allow-origin"] = origin; headers["vary"] = "Origin"; }
+    else if (allowed === null) headers["access-control-allow-origin"] = "*";
+    const w = found.wall;
+    const items = store.loadWallItems(found.ownerId, w.max_items).map((it) => ({
+      id: it.id, platform: it.platform, content: it.content, url: it.post_url,
+      author: { handle: it.author_handle, name: it.author_name }, postedAt: it.posted_at,
+    }));
+    return new Response(JSON.stringify({
+      wall: { id: w.id, layout: w.layout, theme: w.theme, density: w.density,
+              showDates: !!w.show_dates, cssVars: parseCssVars(w.css_vars) },
+      items,
+    }), { headers });
+  }
+
   // ---- protected ----
   return requireUser(store, req, async (uid) => {
     if (p === "/" && req.method === "GET") {
@@ -130,6 +174,52 @@ async function handle(req: Request): Promise<Response> {
     }
 
     const { tab, input } = await readSignals(req, url);
+    const origin = process.env.LAB_ORIGIN ?? url.origin;
+
+    // ---- walls (dashboard) ----
+
+    if (p === "/walls" && req.method === "GET")
+      return page("walls.html", {
+        __EMAIL__: esc(store.emailFor(uid)),
+        __WALLS__: renderWalls(store.listWalls(uid), origin),
+      });
+
+    if (p === "/walls" && req.method === "POST") {
+      const name = String(input.wallName ?? "").trim();
+      if (!name || [...name].length > 60)
+        return stream((s) => s.patch(renderWallMsg("err", "Give the wall a name of up to 60 characters.")));
+      const id = generateWallId();
+      store.createWall(id, uid, name);
+      return stream((s) => {
+        s.patch(renderWallMsg("ok", `Wall <code class="mono">${esc(id)}</code> created. Paste the snippet into your site.`));
+        s.signals(`{wallName: ''}`);
+        s.patch(renderWalls(store.listWalls(uid), origin));
+      });
+    }
+
+    const wm = p.match(/^\/walls\/([^/]+)$/);
+    if (wm) {
+      const id = decodeURIComponent(wm[1]!);
+      if (req.method === "PATCH") {
+        const enabled = url.searchParams.get("enabled");
+        if (enabled !== null && !store.setWallEnabled(uid, id, enabled === "true"))
+          return new Response("not found", { status: 404 });
+        if (url.searchParams.has("domains")) {
+          // null (blank input) means unrestricted; that distinction is
+          // load-bearing in isOriginAllowed.
+          if (!store.setWallDomains(uid, id, parseDomainInput(url.searchParams.get("domains") ?? "")))
+            return new Response("not found", { status: 404 });
+        }
+        return stream((s) => s.patch(renderWalls(store.listWalls(uid), origin)));
+      }
+      if (req.method === "DELETE") {
+        if (!store.deleteWall(uid, id)) return new Response("not found", { status: 404 });
+        return stream((s) => {
+          s.patch(renderWallMsg("ok", "Wall deleted."));
+          s.patch(renderWalls(store.listWalls(uid), origin));
+        });
+      }
+    }
 
     // A GET, and deliberately read-only: a GET is a CORS-simple request, so
     // anything that mutates must not be reachable by one.

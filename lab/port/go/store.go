@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS testimonial (
   author_name   TEXT,
   content       TEXT NOT NULL,
   status        TEXT NOT NULL CHECK (status IN ('pending','approved','dismissed')),
+  verify_state  TEXT NOT NULL DEFAULT 'unknown',
   posted_at     INTEGER,
   created_at    INTEGER NOT NULL
 );
@@ -61,6 +62,9 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(handlesSchema); err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(wallsSchema); err != nil {
 		return nil, err
 	}
 	return &Store{db}, nil

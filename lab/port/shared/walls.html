@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Walls &middot; Social Proof</title>
+<script type="module" src="/datastar.js"></script>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body data-signals="{wallName: '', _busy: false}">
+<div class="shell">
+
+  <nav class="top">
+    <span class="links"><a href="/">Dashboard</a> <a href="/handles">Handles</a>
+      <a href="/walls" class="on">Walls</a></span>
+    <span class="who">Signed in as <strong>__EMAIL__</strong>
+      <button class="btn sm" data-on:click="@post('/logout')">Sign out</button></span>
+  </nav>
+
+  <header>
+    <h1>Walls</h1>
+    <p class="muted">Publish approved testimonials to your own site
+      <span class="badge">__BACKEND__</span></p>
+  </header>
+
+  <section class="card pad">
+    <div id="wall-msg"></div>
+    <form data-on:submit__prevent="@post('/walls')" data-indicator:_busy>
+      <div class="row">
+        <label class="grow"><span>Wall name</span>
+          <input type="text" maxlength="60" data-bind:wall-name placeholder="Homepage testimonials"></label>
+        <button type="submit" class="btn primary" data-attr:disabled="$_busy || !$wallName"
+                data-text="$_busy ? 'Creating…' : 'Create wall'">Create wall</button>
+      </div>
+    </form>
+  </section>
+
+  __WALLS__
+
+  <!--
+    The embed itself is deliberately NOT a Datastar page. See go/embed.go —
+    it runs under `default-src 'none'` with a per-request nonce and renders
+    text written by strangers, and Datastar's own docs say CSP mode "does not
+    make Datastar expressions safe to use with untrusted content".
+  -->
+</div>
+</body>
+</html>
