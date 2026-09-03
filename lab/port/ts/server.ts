@@ -57,7 +57,7 @@ async function readSignals(req: Request, url: URL) {
   const raw = url.searchParams.get("datastar") ?? (req.body ? await req.text() : "");
   let o: Record<string, string> = {};
   if (raw) { try { o = JSON.parse(raw); } catch { /* malformed: treat as empty */ } }
-  const tab = (STATUSES as string[]).includes(o.tab) ? (o.tab as Status) : "pending";
+  const tab = (STATUSES as string[]).includes(o.tab ?? "") ? (o.tab as Status) : "pending";
   return { tab, input: o };
 }
 

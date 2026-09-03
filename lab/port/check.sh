@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# The full gate. Static checks, then 56 browser-driven assertions against both
+# backends. The analogue of `pnpm lint && pnpm check && pnpm test:ci`.
+set -uo pipefail
+cd "$(dirname "$0")"
+FAIL=0
+step() { printf "\n\033[1m%s\033[0m\n" "$1"; }
+ok()   { [ "$1" -eq 0 ] && echo "  ok" || { echo "  FAILED"; FAIL=1; }; }
+
+step "1/6  gofmt"
+test -z "$(gofmt -l go/)" ; ok $?
+
+step "2/6  go vet + build"
+( cd go && go vet ./... && go build -o /tmp/check-port-go . ) ; ok $?
+
+step "3/6  tsc --noEmit"
+( cd ts && bunx tsc --noEmit ) ; ok $?
+
+step "4/6  check-datastar (the attribute layer Datastar does not check)"
+bun check-datastar.mjs ; ok $?
+
+step "5/6  booting both backends"
+DB_GO=$(mktemp -u /tmp/chk-go-XXXX.db); DB_TS=$(mktemp -u /tmp/chk-ts-XXXX.db)
+SHARED="$PWD/shared"
+( cd go && PORT=8102 LAB_DB="$DB_GO" LAB_SHARED="$SHARED" /tmp/check-port-go ) >/tmp/chk-go.log 2>&1 &
+GO_PID=$!
+( cd ts && PORT=8103 LAB_DB="$DB_TS" LAB_SHARED="$SHARED" bun server.ts ) >/tmp/chk-ts.log 2>&1 &
+TS_PID=$!
+cleanup() { kill $GO_PID $TS_PID 2>/dev/null; rm -f "$DB_GO" "$DB_TS"; }
+trap cleanup EXIT
+for i in $(seq 1 40); do
+  curl -sf -o /dev/null http://localhost:8102/login && curl -sf -o /dev/null http://localhost:8103/login && break
+  sleep 0.25
+done
+curl -sf -o /dev/null http://localhost:8102/login && curl -sf -o /dev/null http://localhost:8103/login ; ok $?
+
+step "6/6  browser suites (13 dashboard + 11 auth + 15 scan + 17 embed, per backend)"
+for suite in verify-port verify-auth verify-scan verify-embed; do
+  for pair in "Go:8102" "TS:8103"; do
+    name=${pair%%:*}; port=${pair##*:}
+    printf "  %-14s %-3s " "$suite" "$name"
+    if out=$(bun "$suite.mjs" "http://localhost:$port" "/tmp/chk-$suite-$name.png" 2>&1); then
+      echo "$(grep -c PASS <<<"$out") passed"
+    else
+      echo "FAILED"; grep -E "FAIL|problem" <<<"$out" | sed 's/^/      /'; FAIL=1
+    fi
+  done
+done
+
+printf "\n\033[1m%s\033[0m\n" "$([ $FAIL -eq 0 ] && echo "All checks passed." || echo "Checks FAILED.")"
+exit $FAIL

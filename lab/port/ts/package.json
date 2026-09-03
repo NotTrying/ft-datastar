@@ -1,2 +1,11 @@
-{ "name": "social-proof-datastar-ts", "private": true, "type": "module",
-  "scripts": { "dev": "bun server.ts" } }
+{
+  "name": "social-proof-datastar-ts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun server.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}
