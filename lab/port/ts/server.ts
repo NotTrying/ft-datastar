@@ -9,6 +9,10 @@ import { searchMentions, scanRow } from "./scan.ts";
 import { generateWallId, parseDomainInput, parseAllowedDomains, isOriginAllowed, parseCssVars } from "./walls.ts";
 import { renderWalls, renderWallMsg, renderWallHtml, embedHeaders, applyOverrides } from "./embed.ts";
 import {
+  validateProfile, issueOtp, checkOtp, clearOtp, lastOtp,
+  renderProfile, renderSessions, renderMsg as renderSettingsMsg,
+} from "./settings.ts";
+import {
   COOKIE, SESSION_TTL_MS, hashPassword, verifyPassword, tokenHash, newToken,
   sessionCookie, clearCookie, readCookie, isDatastar, sameOrigin, sseRedirect,
   currentUser, requireUser,
@@ -106,7 +110,8 @@ async function handle(req: Request): Promise<Response> {
 
     const tok = newToken();
     const expires = new Date(Date.now() + SESSION_TTL_MS);
-    store.createSession(await tokenHash(tok), row.id, expires);
+    store.createSession(await tokenHash(tok), row.id, expires,
+      (req.headers.get("user-agent") ?? "").slice(0, 120));
     return sseRedirect("/", { "set-cookie": sessionCookie(tok, expires, secure) });
   }
 
@@ -196,6 +201,119 @@ async function handle(req: Request): Promise<Response> {
         s.patch(renderWalls(store.listWalls(uid), origin));
       });
     }
+
+    // ---- settings ----
+
+    const settingsPage = async () => {
+      const u = store.userById(uid)!;
+      const tok = readCookie(req, COOKIE);
+      const hash = tok ? await tokenHash(tok) : "";
+      return page("settings.html", {
+        __EMAIL__: esc(u.email),
+        __PROFILE__: renderProfile(u),
+        __SESSIONS__: renderSessions(store.listSessions(uid), hash),
+      });
+    };
+
+    if (p === "/settings" && req.method === "GET") return settingsPage();
+
+    if (p === "/settings/profile" && req.method === "POST") {
+      const u = store.userById(uid)!;
+      const v = validateProfile({ name: String(input.name ?? ""), email: String(input.email ?? "") });
+      if (!v.ok) return stream((s) => s.patch(renderSettingsMsg("err", esc(v.error))));
+
+      // The name is saved immediately either way, matching the original.
+      store.setUserName(uid, v.name);
+
+      if (v.email === u.email) {
+        return stream((s) => {
+          s.patch(renderSettingsMsg("ok", "Profile updated successfully"));
+          s.patch(renderProfile({ ...u, name: v.name }));
+        });
+      }
+      const taken = store.findUser(v.email);
+      if (taken && taken.id !== uid)
+        return stream((s) => s.patch(renderSettingsMsg("err", "Email is already taken")));
+
+      // Step 1: prove you still control the CURRENT address.
+      issueOtp(uid, "current", u.email, v.email);
+      return stream((s) => {
+        s.patch(renderSettingsMsg("ok",
+          `Verification code sent to your current email (${esc(u.email)}). Enter it below to confirm it&rsquo;s you.`));
+        s.patch(renderProfile({ ...u, name: v.name }, "current", v.email));
+      });
+    }
+
+    if (p === "/settings/verify-current" && req.method === "POST") {
+      const u = store.userById(uid)!;
+      const hit = checkOtp(uid, "current", String(input.otp ?? ""));
+      if (!hit)
+        return stream((s) => s.patch(renderSettingsMsg("err",
+          "Invalid or expired verification code. Please try again.")));
+      // Step 2: now prove you own the NEW address.
+      issueOtp(uid, "new", hit.pendingEmail, hit.pendingEmail);
+      return stream((s) => {
+        s.patch(renderSettingsMsg("ok",
+          `Current email verified. A code has been sent to ${esc(hit.pendingEmail)}.`));
+        s.patch(renderProfile(u, "new", hit.pendingEmail));
+        s.signals(`{otp: ''}`);
+      });
+    }
+
+    if (p === "/settings/verify-new" && req.method === "POST") {
+      const hit = checkOtp(uid, "new", String(input.otp ?? ""));
+      if (!hit)
+        return stream((s) => s.patch(renderSettingsMsg("err",
+          "Invalid or expired verification code. Please try again.")));
+      // Step 3: commit.
+      store.setUserEmail(uid, hit.pendingEmail);
+      clearOtp(uid);
+      const u = store.userById(uid)!;
+      return stream((s) => {
+        s.patch(renderSettingsMsg("ok", "Email address updated successfully"));
+        s.patch(renderProfile(u));
+        s.signals(`{otp: '', email: '${u.email}'}`);
+      });
+    }
+
+    if (p === "/settings/cancel-email" && req.method === "POST") {
+      clearOtp(uid);
+      const u = store.userById(uid)!;
+      return stream((s) => {
+        s.patch(renderSettingsMsg(""));
+        s.patch(renderProfile(u));
+        s.signals(`{otp: ''}`);
+      });
+    }
+
+    const sm = p.match(/^\/settings\/sessions\/([0-9a-f]{64})$/);
+    if (sm && req.method === "DELETE") {
+      const tok = readCookie(req, COOKIE);
+      const hash = tok ? await tokenHash(tok) : "";
+      const target = sm[1]!;
+      // Revoking your own current session would sign you out mid-request.
+      if (target === hash) return new Response("cannot revoke the current session", { status: 400 });
+      if (!store.revokeSession(uid, target)) return new Response("not found", { status: 404 });
+      return stream((s) => {
+        s.patch(renderSettingsMsg("ok", "Session revoked successfully"));
+        s.patch(renderSessions(store.listSessions(uid), hash));
+      });
+    }
+
+    if (p === "/settings/revoke-others" && req.method === "POST") {
+      const tok = readCookie(req, COOKIE);
+      const hash = tok ? await tokenHash(tok) : "";
+      const n = store.revokeOtherSessions(uid, hash);
+      return stream((s) => {
+        s.patch(renderSettingsMsg("ok", `All other sessions revoked (${n})`));
+        s.patch(renderSessions(store.listSessions(uid), hash));
+      });
+    }
+
+    // Dev-only: lets the browser suite read the OTP the mock mailer "sent".
+    // Gated on LAB_DEV_OTP=1, which no normal run sets.
+    if (p === "/dev/last-otp" && process.env.LAB_DEV_OTP === "1")
+      return new Response(JSON.stringify(lastOtp ?? {}), { headers: { "content-type": "application/json" } });
 
     const wm = p.match(/^\/walls\/([^/]+)$/);
     if (wm) {
@@ -376,12 +494,16 @@ async function seed(): Promise<string> {
   let user = store.findUser("owner@example.com");
   if (!user) {
     const id = crypto.randomUUID();
-    store.createUser(id, "owner@example.com", await hashPassword("correct-horse-battery"));
+    store.createUser(id, "owner@example.com", await hashPassword("correct-horse-battery"), "Sam Owner");
     user = store.findUser("owner@example.com")!;
   }
   // Pro so the handle and testimonial caps are exercised but not in the way.
   store.setPlan(user.id, "pro");
   try { store.addHandle(user.id, "acmetools"); } catch { /* already there */ }
+  // A second account, so the "email is already taken" path is reachable.
+  if (!store.findUser("other@example.com"))
+    store.createUser(crypto.randomUUID(), "other@example.com",
+      await hashPassword("correct-horse-battery"), "Other Person");
   if (store.total(user.id) > 0) return user.id;
   const d = (s: string) => new Date(s);
   const rows: [string, string, string, string, string, string, Date, Status][] = [

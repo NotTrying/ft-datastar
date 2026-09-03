@@ -53,12 +53,21 @@ and spend the effort on the interaction layer. Flag better-auth for a decision w
 
 ## Checklist
 
-### 1. Profile settings — `dashboard/settings`
-- [ ] Port `settings/+page.server.ts` (269) + `+page.svelte` (402)
-- [ ] Change display name; change email; change password (re-auth with current password)
-- [ ] Delete account, including the `user-cleanup.ts` (84) cascade
-- [ ] Sessions list + "sign out everywhere"
-- [ ] Browser suite `verify-settings.mjs`
+### 1. Profile settings — `dashboard/settings` — DONE
+- [x] Port `settings/+page.server.ts` (269) + `+page.svelte` (402)
+- [x] Change display name; change email via the three-step OTP flow
+- [x] Sessions list, revoke one, "sign out everywhere"
+- [x] Browser suite `verify-settings.mjs` (22 assertions)
+
+Two items in the original version of this list were wrong and have been dropped:
+
+- **No password change on this page.** The original settings page has five actions
+  (updateProfile, verifyCurrentEmail, verifyEmailChange, revokeSession,
+  revokeOtherSessions) and none of them touch passwords.
+- **No self-serve account deletion, deliberately.** The original ends with a comment
+  explaining it: deletion is admin-only so it runs the `user.delete` databaseHook that
+  cancels the org's Stripe subscription. A raw delete would leave a paying org billed after
+  the user is gone. `user-cleanup.ts` belongs to the admin path, not here. Preserved.
 
 ### 2. Organizations — `dashboard/settings/organization` + invites
 - [ ] Port `organization/+page.server.ts` (56) + `+page.svelte` (260)
@@ -98,4 +107,12 @@ not fire again tomorrow, and leave a short summary as the final commit.
 
 Append one line per firing: what was attempted, what landed, what broke.
 
-- (no firings yet)
+- **Run 1 (23:41Z)** — Item 1 done: profile settings, three-step email OTP, session
+  management. 22 new assertions; gate green at 134 total. Three things worth recording:
+  (a) declaring a signal in `data-signals` that a `data-bind` input also owns silently
+  BLANKS the server-rendered `value` — the declaration wins and is written into the element;
+  let the input own its own signal. (b) `maxlength` and `type="email"` mean the browser
+  blocks bad input before Datastar sees it, so client guard and server rule need separate
+  assertions — the server rule is the one that matters. (c) the ID-DRIFT check in
+  check-datastar.mjs narrowed now that Go is frozen; the browser suites cover what it lost,
+  verified by injecting a renamed patch target. Suites now report progress on crash.

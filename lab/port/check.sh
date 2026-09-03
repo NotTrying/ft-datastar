@@ -24,7 +24,7 @@ DB_GO=$(mktemp -u /tmp/chk-go-XXXX.db); DB_TS=$(mktemp -u /tmp/chk-ts-XXXX.db)
 SHARED="$PWD/shared"
 ( cd go && PORT=8102 LAB_DB="$DB_GO" LAB_SHARED="$SHARED" /tmp/check-port-go ) >/tmp/chk-go.log 2>&1 &
 GO_PID=$!
-( cd ts && PORT=8103 LAB_DB="$DB_TS" LAB_SHARED="$SHARED" bun server.ts ) >/tmp/chk-ts.log 2>&1 &
+( cd ts && PORT=8103 LAB_DB="$DB_TS" LAB_SHARED="$SHARED" LAB_DEV_OTP=1 bun server.ts ) >/tmp/chk-ts.log 2>&1 &
 TS_PID=$!
 cleanup() { kill $GO_PID $TS_PID 2>/dev/null; rm -f "$DB_GO" "$DB_TS"; }
 trap cleanup EXIT

@@ -118,3 +118,7 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut)
 .snippet>span{font-size:12px;color:var(--mut)}
 .snippet textarea{font:12px ui-monospace,monospace;resize:vertical}
 .wall .foot a{color:var(--acc)}
+
+/* settings */
+.session .meta .plat{background:var(--acc);color:var(--card)}
+.session .foot{gap:10px}

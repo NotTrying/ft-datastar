@@ -134,18 +134,17 @@ for (const u of used)
     add(u.file, u.line, "UNDECLARED-SIGNAL",
       `\`$${u.name}\` is read but never declared — Datastar renders it as empty with no error`);
 
-// Both backends serve the same HTML templates, so a patch id present in one
-// renderer and not the other means one of them is patching an element that
-// will never exist.
+// The Go port is frozen at four features while TypeScript moves ahead, so the
+// two are no longer expected to render the same set of ids. Only one direction
+// still means something: every id the frozen Go port renders must still be
+// rendered by TypeScript, or a shared feature has drifted apart. Ids that exist
+// only in TypeScript are new features and are not drift.
 const go = idsBy.go ?? new Map(), ts = idsBy.ts ?? new Map();
-if (go.size && ts.size) {
+if (go.size && ts.size)
   for (const [id, at] of go)
     if (!ts.has(id) && !templateIdsFromHtml.has(id))
-      add(at.file, at.line, "ID-DRIFT", `#${id} is rendered by the Go backend but by neither the TypeScript one nor a template`);
-  for (const [id, at] of ts)
-    if (!go.has(id) && !templateIdsFromHtml.has(id))
-      add(at.file, at.line, "ID-DRIFT", `#${id} is rendered by the TypeScript backend but by neither the Go one nor a template`);
-}
+      add(at.file, at.line, "ID-DRIFT",
+        `#${id} is rendered by the frozen Go port but no longer by TypeScript — a shared feature has drifted`);
 
 const seen = new Set();
 const uniq = problems.filter((p) => { const k = `${p.file}:${p.line}:${p.code}:${p.msg}`; if (seen.has(k)) return false; seen.add(k); return true; });

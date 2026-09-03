@@ -29,6 +29,10 @@ export type WallItemRow = {
   author_handle: string | null; author_name: string | null; posted_at: number | null;
 };
 
+export type SessionRow = {
+  token_hash: string; created_at: number; expires_at: number; user_agent: string | null;
+};
+
 export class Duplicate extends Error {}
 
 const SCHEMA = `
@@ -54,6 +58,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS testimonial_dedupe
 CREATE TABLE IF NOT EXISTS app_user (
   id         TEXT PRIMARY KEY,
   email      TEXT NOT NULL UNIQUE,
+  name       TEXT,
   pw_hash    TEXT NOT NULL,
   plan       TEXT NOT NULL DEFAULT 'free',
   created_at INTEGER NOT NULL
@@ -61,7 +66,9 @@ CREATE TABLE IF NOT EXISTS app_user (
 CREATE TABLE IF NOT EXISTS session (
   token_hash TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  user_agent TEXT
 );
 
 CREATE TABLE IF NOT EXISTS monitored_handle (
@@ -158,9 +165,9 @@ export class Store {
   // Password hashing is async and lives in auth.ts; the store only ever sees
   // an already-hashed value.
 
-  createUser(id: string, email: string, pwHash: string) {
-    this.db.query(`INSERT INTO app_user (id, email, pw_hash, created_at) VALUES (?,?,?,?)`)
-      .run(id, email.trim().toLowerCase(), pwHash, Date.now());
+  createUser(id: string, email: string, pwHash: string, name = "") {
+    this.db.query(`INSERT INTO app_user (id, email, name, pw_hash, created_at) VALUES (?,?,?,?,?)`)
+      .run(id, email.trim().toLowerCase(), name || null, pwHash, Date.now());
   }
 
   findUser(email: string): { id: string; pw_hash: string } | null {
@@ -173,9 +180,44 @@ export class Store {
       `SELECT email FROM app_user WHERE id = ?`).get(userId)?.email ?? "";
   }
 
-  createSession(tokenHash: string, userId: string, expires: Date) {
-    this.db.query(`INSERT INTO session (token_hash, user_id, expires_at) VALUES (?,?,?)`)
-      .run(tokenHash, userId, expires.getTime());
+  createSession(tokenHash: string, userId: string, expires: Date, userAgent = "") {
+    this.db.query(`INSERT INTO session (token_hash, user_id, expires_at, created_at, user_agent)
+                   VALUES (?,?,?,?,?)`)
+      .run(tokenHash, userId, expires.getTime(), Date.now(), userAgent || null);
+  }
+
+  // ---- profile + sessions ----
+
+  userById(id: string): { id: string; email: string; name: string | null; plan: string } | null {
+    return this.db.query<{ id: string; email: string; name: string | null; plan: string }, [string]>(
+      `SELECT id, email, name, plan FROM app_user WHERE id = ?`).get(id);
+  }
+
+  setUserName(id: string, name: string) {
+    this.db.query(`UPDATE app_user SET name = ? WHERE id = ?`).run(name, id);
+  }
+
+  setUserEmail(id: string, email: string) {
+    this.db.query(`UPDATE app_user SET email = ? WHERE id = ?`).run(email.trim().toLowerCase(), id);
+  }
+
+  listSessions(userId: string): SessionRow[] {
+    return this.db.query<SessionRow, [string, number]>(`
+      SELECT token_hash, created_at, expires_at, user_agent
+        FROM session WHERE user_id = ? AND expires_at > ?
+       ORDER BY created_at DESC`).all(userId, Date.now());
+  }
+
+  // Revoke is scoped by user_id as well as the hash: one user must never be
+  // able to end another's session by guessing a hash.
+  revokeSession(userId: string, tokenHash: string): boolean {
+    return this.db.query(`DELETE FROM session WHERE token_hash = ? AND user_id = ?`)
+      .run(tokenHash, userId).changes > 0;
+  }
+
+  revokeOtherSessions(userId: string, keepHash: string): number {
+    return this.db.query(`DELETE FROM session WHERE user_id = ? AND token_hash != ?`)
+      .run(userId, keepHash).changes;
   }
 
   userForToken(tokenHash: string): string | null {

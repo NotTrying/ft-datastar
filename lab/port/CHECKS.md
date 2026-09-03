@@ -55,9 +55,17 @@ Fails the build on the four silent classes plus one more:
 4. **Signal read but never declared** — `$foo` inside a `data-*` value with no
    `data-signals` / `data-bind` / `data-computed` / `data-indicator` / `data-ref` and no
    server `signals()` patch declaring it.
-5. **Element-id drift between backends** — both serve the same templates, so an id rendered
-   by one backend and neither the other nor a template means someone is patching an element
-   that will never exist.
+5. **Element-id drift on shared features** — every id the now-frozen Go port renders must
+   still be rendered by TypeScript, or a feature they share has drifted apart.
+
+   Note the narrowed scope. This rule was sound while both backends moved in lockstep: an id
+   in one and not the other meant somebody was patching an element that would never exist,
+   and it caught exactly that. With Go frozen and TypeScript moving ahead, ids that exist
+   only in TypeScript are new features, not drift, so the check can no longer flag a renamed
+   patch target in new code. **The browser suites catch that instead** — verified by renaming
+   `#form-msg` to `#form-msgg` in `render.ts`: `check-datastar.mjs` stays quiet, and
+   `verify-port.mjs` fails within seconds waiting for an element that never updates. Static
+   analysis narrowed here; runtime coverage took over.
 
 Verified by injecting all five into the real codebase — every one was caught, and reverting
 returns it to clean. Both `go vet` and `tsc` stayed silent throughout: none of them are

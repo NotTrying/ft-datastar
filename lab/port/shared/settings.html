@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings &middot; Social Proof</title>
+<script type="module" src="/datastar.js"></script>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<!--
+  No step state here. The email change is a three-step flow, and which step you
+  are on is decided by the server and pushed as HTML into #profile-panel.
+
+  Note what is NOT declared below: `name`, `email` and `otp`. A signal declared
+  in data-signals wins over the element, and data-bind then writes that value
+  INTO the input — so declaring them here silently blanks the server-rendered
+  `value` attributes. Let each data-bind input own and seed its own signal.
+-->
+<body data-signals="{_saving: false}">
+<div class="shell">
+
+  <nav class="top">
+    <span class="links"><a href="/">Dashboard</a> <a href="/handles">Handles</a>
+      <a href="/walls">Walls</a> <a href="/settings" class="on">Settings</a></span>
+    <span class="who">Signed in as <strong>__EMAIL__</strong>
+      <button class="btn sm" data-on:click="@post('/logout')">Sign out</button></span>
+  </nav>
+
+  <header>
+    <h1>Settings</h1>
+    <p class="muted">Your account <span class="badge">__BACKEND__</span></p>
+  </header>
+
+  <section class="card pad">
+    <h2>Profile</h2>
+    <div id="settings-msg"></div>
+    __PROFILE__
+  </section>
+
+  <section class="card pad">
+    <h2>Active sessions</h2>
+    <p class="muted small">Signing out a session ends it immediately on that device.</p>
+    __SESSIONS__
+  </section>
+
+</div>
+</body>
+</html>
