@@ -33,6 +33,16 @@ export type SessionRow = {
   token_hash: string; created_at: number; expires_at: number; user_agent: string | null;
 };
 
+export type OrgRow = { id: string; name: string; slug: string; created_at: number };
+export type MemberRow = {
+  id: string; user_id: string; role: string; created_at: number;
+  email: string; name: string | null;
+};
+export type InviteRow = {
+  id: string; organization_id: string; email: string; role: string;
+  status: string; expires_at: number; org_name: string;
+};
+
 export class Duplicate extends Error {}
 
 const SCHEMA = `
@@ -68,7 +78,8 @@ CREATE TABLE IF NOT EXISTS session (
   user_id    TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL DEFAULT 0,
-  user_agent TEXT
+  user_agent TEXT,
+  active_org_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS monitored_handle (
@@ -91,6 +102,32 @@ CREATE TABLE IF NOT EXISTS scan_log (
   user_id   TEXT NOT NULL,
   handle_id TEXT NOT NULL,
   at        INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS organization (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  slug       TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS member (
+  id              TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  user_id         TEXT NOT NULL,
+  role            TEXT NOT NULL,
+  created_at      INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS member_unique ON member (organization_id, user_id);
+
+CREATE TABLE IF NOT EXISTS invitation (
+  id              TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  email           TEXT NOT NULL,
+  role            TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  inviter_id      TEXT NOT NULL,
+  expires_at      INTEGER NOT NULL,
+  created_at      INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS wall (
@@ -234,6 +271,108 @@ export class Store {
 
   setPlan(userId: string, plan: string) {
     this.db.query(`UPDATE app_user SET plan = ? WHERE id = ?`).run(plan, userId);
+  }
+
+  // ---- organizations ----
+
+  createOrg(id: string, name: string, slug: string) {
+    try {
+      this.db.query(`INSERT INTO organization (id, name, slug, created_at) VALUES (?,?,?,?)`)
+        .run(id, name, slug, Date.now());
+    } catch (e) {
+      if (String(e).toUpperCase().includes("UNIQUE")) throw new Duplicate();
+      throw e;
+    }
+  }
+
+  deleteOrg(id: string) {
+    this.db.query(`DELETE FROM organization WHERE id = ?`).run(id);
+  }
+
+  addMember(id: string, orgId: string, userId: string, role: string) {
+    try {
+      this.db.query(`INSERT INTO member (id, organization_id, user_id, role, created_at) VALUES (?,?,?,?,?)`)
+        .run(id, orgId, userId, role, Date.now());
+    } catch (e) {
+      if (String(e).toUpperCase().includes("UNIQUE")) throw new Duplicate();
+      throw e;
+    }
+  }
+
+  orgsFor(userId: string): OrgRow[] {
+    return this.db.query<OrgRow, [string]>(`
+      SELECT o.id, o.name, o.slug, o.created_at FROM organization o
+        JOIN member m ON m.organization_id = o.id
+       WHERE m.user_id = ? ORDER BY o.created_at`).all(userId);
+  }
+
+  org(id: string): OrgRow | null {
+    return this.db.query<OrgRow, [string]>(
+      `SELECT id, name, slug, created_at FROM organization WHERE id = ?`).get(id);
+  }
+
+  members(orgId: string): MemberRow[] {
+    return this.db.query<MemberRow, [string]>(`
+      SELECT m.id, m.user_id, m.role, m.created_at, u.email, u.name
+        FROM member m JOIN app_user u ON u.id = m.user_id
+       WHERE m.organization_id = ? ORDER BY m.created_at`).all(orgId);
+  }
+
+  roleIn(orgId: string, userId: string): string | null {
+    return this.db.query<{ role: string }, [string, string]>(
+      `SELECT role FROM member WHERE organization_id = ? AND user_id = ?`).get(orgId, userId)?.role ?? null;
+  }
+
+  removeMember(orgId: string, userId: string): boolean {
+    return this.db.query(`DELETE FROM member WHERE organization_id = ? AND user_id = ?`)
+      .run(orgId, userId).changes > 0;
+  }
+
+  // The active org is a property of the SESSION, matching better-auth.
+  setActiveOrg(tokenHash: string, orgId: string | null) {
+    this.db.query(`UPDATE session SET active_org_id = ? WHERE token_hash = ?`).run(orgId, tokenHash);
+  }
+
+  activeOrg(tokenHash: string): string | null {
+    return this.db.query<{ active_org_id: string | null }, [string]>(
+      `SELECT active_org_id FROM session WHERE token_hash = ?`).get(tokenHash)?.active_org_id ?? null;
+  }
+
+  // ---- invitations ----
+
+  createInvite(id: string, orgId: string, email: string, role: string, inviterId: string, expires: number) {
+    this.db.query(`INSERT INTO invitation
+      (id, organization_id, email, role, status, inviter_id, expires_at, created_at)
+      VALUES (?,?,?,?,'pending',?,?,?)`)
+      .run(id, orgId, email.trim().toLowerCase(), role, inviterId, expires, Date.now());
+  }
+
+  pendingInvites(orgId: string): InviteRow[] {
+    return this.db.query<InviteRow, [string, number]>(`
+      SELECT i.id, i.organization_id, i.email, i.role, i.status, i.expires_at, o.name AS org_name
+        FROM invitation i JOIN organization o ON o.id = i.organization_id
+       WHERE i.organization_id = ? AND i.status = 'pending' AND i.expires_at > ?
+       ORDER BY i.created_at DESC`).all(orgId, Date.now());
+  }
+
+  invite(id: string): InviteRow | null {
+    return this.db.query<InviteRow, [string]>(`
+      SELECT i.id, i.organization_id, i.email, i.role, i.status, i.expires_at, o.name AS org_name
+        FROM invitation i JOIN organization o ON o.id = i.organization_id
+       WHERE i.id = ?`).get(id);
+  }
+
+  inviteByEmail(orgId: string, email: string): InviteRow | null {
+    return this.db.query<InviteRow, [string, string, number]>(`
+      SELECT i.id, i.organization_id, i.email, i.role, i.status, i.expires_at, o.name AS org_name
+        FROM invitation i JOIN organization o ON o.id = i.organization_id
+       WHERE i.organization_id = ? AND i.email = ? AND i.status = 'pending' AND i.expires_at > ?`)
+      .get(orgId, email.trim().toLowerCase(), Date.now());
+  }
+
+  setInviteStatus(id: string, status: string): boolean {
+    return this.db.query(`UPDATE invitation SET status = ? WHERE id = ? AND status = 'pending'`)
+      .run(status, id).changes > 0;
   }
 
   // ---- monitored handles ----

@@ -122,3 +122,7 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut)
 /* settings */
 .session .meta .plat{background:var(--acc);color:var(--card)}
 .session .foot{gap:10px}
+
+/* organisation */
+.member .plat,.invite .plat{text-transform:capitalize}
+#org-switcher .btn.primary{cursor:default}

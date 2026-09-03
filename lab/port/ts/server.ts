@@ -13,6 +13,10 @@ import {
   renderProfile, renderSessions, renderMsg as renderSettingsMsg,
 } from "./settings.ts";
 import {
+  ensurePersonalOrg, canManage, validateInvite, inviteExpiry,
+  renderOrgMsg, renderOrgSwitcher, renderMembers, renderInvites,
+} from "./org.ts";
+import {
   COOKIE, SESSION_TTL_MS, hashPassword, verifyPassword, tokenHash, newToken,
   sessionCookie, clearCookie, readCookie, isDatastar, sameOrigin, sseRedirect,
   currentUser, requireUser,
@@ -110,8 +114,13 @@ async function handle(req: Request): Promise<Response> {
 
     const tok = newToken();
     const expires = new Date(Date.now() + SESSION_TTL_MS);
-    store.createSession(await tokenHash(tok), row.id, expires,
+    const hash = await tokenHash(tok);
+    store.createSession(hash, row.id, expires,
       (req.headers.get("user-agent") ?? "").slice(0, 120));
+    // Everyone gets a personal workspace on first sign-in, and the new session
+    // starts in it. Idempotent, so later sign-ins reuse the existing one.
+    const u = store.userById(row.id)!;
+    store.setActiveOrg(hash, ensurePersonalOrg(store, u));
     return sseRedirect("/", { "set-cookie": sessionCookie(tok, expires, secure) });
   }
 
@@ -200,6 +209,175 @@ async function handle(req: Request): Promise<Response> {
         s.signals(`{wallName: ''}`);
         s.patch(renderWalls(store.listWalls(uid), origin));
       });
+    }
+
+    // ---- organisation ----
+
+    const sessionHash = async () => {
+      const t = readCookie(req, COOKIE);
+      return t ? await tokenHash(t) : "";
+    };
+    // The session's active org is only honoured while the user is still a
+    // member of it. Without this check a removed member keeps reading the org
+    // they were removed from, because their session still points at it.
+    const activeOrgFor = async (hash: string) => {
+      const pinned = store.activeOrg(hash);
+      if (pinned && store.roleIn(pinned, uid)) return pinned;
+      const fallback = store.orgsFor(uid)[0]?.id ?? null;
+      if (pinned !== fallback) store.setActiveOrg(hash, fallback);
+      return fallback;
+    };
+
+    if (p.startsWith("/org")) {
+      const hash = await sessionHash();
+      const orgId = await activeOrgFor(hash);
+      const role = orgId ? store.roleIn(orgId, uid) : null;
+
+      if (p === "/org" && req.method === "GET") {
+        const orgs = store.orgsFor(uid);
+        const org = orgId ? store.org(orgId) : null;
+        const inviteForm = canManage(role)
+          ? `<form data-on:submit__prevent="@post('/org/invites')" data-indicator:_busy>
+               <div class="row">
+                 <label class="grow"><span>Email</span>
+                   <input type="email" data-bind:invite-email placeholder="colleague@example.com"></label>
+                 <label><span>Role</span>
+                   <select data-bind:invite-role>
+                     <option value="member">member</option><option value="admin">admin</option>
+                   </select></label>
+                 <button type="submit" class="btn primary" data-attr:disabled="$_busy || !$inviteEmail"
+                         data-text="$_busy ? 'Inviting…' : 'Send invite'">Send invite</button>
+               </div></form>`
+          : `<p class="muted small">Only an owner or admin can invite people.</p>`;
+        return page("org.html", {
+          __EMAIL__: esc(store.userById(uid)!.email),
+          __ORGNAME__: esc(org?.name ?? "No organisation"),
+          __SWITCHER__: renderOrgSwitcher(orgs, orgId),
+          __MEMBERS__: orgId ? renderMembers(store.members(orgId), orgId, uid, role) : `<div id="members"></div>`,
+          __INVITEFORM__: inviteForm,
+          __INVITES__: orgId ? renderInvites(store.pendingInvites(orgId), role, origin) : `<div id="invites"></div>`,
+        });
+      }
+
+      const redraw = (s: SSE, oid: string, r: string | null) => {
+        s.patch(renderMembers(store.members(oid), oid, uid, r));
+        s.patch(renderInvites(store.pendingInvites(oid), r, origin));
+        s.patch(renderOrgSwitcher(store.orgsFor(uid), oid));
+      };
+
+      if (p === "/org" && req.method === "POST") {
+        const name = String(input.orgName ?? "").trim();
+        if (!name || name.length > 80)
+          return stream((s) => s.patch(renderOrgMsg("err", "Give the organisation a name of up to 80 characters.")));
+        const newId = `org_${crypto.randomUUID().replaceAll("-", "")}`;
+        try {
+          store.createOrg(newId, name, `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${newId.slice(4, 12)}`);
+          store.addMember(`mem_${crypto.randomUUID().replaceAll("-", "")}`, newId, uid, "owner");
+        } catch {
+          return stream((s) => s.patch(renderOrgMsg("err", "Could not create that organisation.")));
+        }
+        store.setActiveOrg(hash, newId);
+        // The whole page changes identity, so send the browser back to it.
+        return sseRedirect("/org");
+      }
+
+      if (p === "/org/active" && req.method === "POST") {
+        const target = url.searchParams.get("id") ?? "";
+        // Switching is only legal into an org you actually belong to.
+        if (!store.roleIn(target, uid)) return new Response("not a member", { status: 403 });
+        store.setActiveOrg(hash, target);
+        return sseRedirect("/org");
+      }
+
+      if (!orgId) return new Response("no active organisation", { status: 400 });
+
+      if (p === "/org/invites" && req.method === "POST") {
+        if (!canManage(role)) return new Response("forbidden", { status: 403 });
+        const v = validateInvite(store, orgId, String(input.inviteEmail ?? ""), String(input.inviteRole ?? "member"));
+        if (!v.ok) return stream((s) => s.patch(renderOrgMsg("err", esc(v.error))));
+        const inviteId = `inv_${crypto.randomUUID().replaceAll("-", "")}`;
+        store.createInvite(inviteId, orgId, v.email, v.role, uid, inviteExpiry());
+        console.log(`[email] invitation ${origin}/invite/${inviteId} -> ${v.email}`);
+        return stream((s) => {
+          s.patch(renderOrgMsg("ok", `Invitation sent to ${esc(v.email)}.`));
+          s.signals(`{inviteEmail: ''}`);
+          redraw(s, orgId, role);
+        });
+      }
+
+      const im = p.match(/^\/org\/invites\/([^/]+)$/);
+      if (im && req.method === "DELETE") {
+        if (!canManage(role)) return new Response("forbidden", { status: 403 });
+        const inv = store.invite(decodeURIComponent(im[1]!));
+        // Scoped to this org: an id from another org must not be cancellable.
+        if (!inv || inv.organization_id !== orgId) return new Response("not found", { status: 404 });
+        store.setInviteStatus(inv.id, "cancelled");
+        return stream((s) => {
+          s.patch(renderOrgMsg("ok", "Invitation cancelled."));
+          redraw(s, orgId, role);
+        });
+      }
+
+      const mm = p.match(/^\/org\/members\/([^/]+)$/);
+      if (mm && req.method === "DELETE") {
+        if (!canManage(role)) return new Response("forbidden", { status: 403 });
+        const target = decodeURIComponent(mm[1]!);
+        const targetRole = store.roleIn(orgId, target);
+        if (!targetRole) return new Response("not found", { status: 404 });
+        // The owner is not removable, and nobody removes themselves here.
+        if (targetRole === "owner") return new Response("the owner cannot be removed", { status: 400 });
+        if (target === uid) return new Response("use leave instead", { status: 400 });
+        store.removeMember(orgId, target);
+        return stream((s) => {
+          s.patch(renderOrgMsg("ok", "Member removed."));
+          redraw(s, orgId, role);
+        });
+      }
+    }
+
+    // ---- invitations (the invitee's side) ----
+
+    const invm = p.match(/^\/invite\/([^/]+)$/);
+    if (invm && req.method === "GET") {
+      const inv = store.invite(decodeURIComponent(invm[1]!));
+      const me = store.userById(uid)!;
+      let body: string;
+      if (!inv || inv.status !== "pending" || inv.expires_at < Date.now()) {
+        body = `<p class="muted">Invitation not found or has expired.</p>`;
+      } else if (inv.email !== me.email) {
+        // Say who it is for, so a signed-in visitor knows to switch accounts.
+        body = `<p>This invitation is for <strong>${esc(inv.email)}</strong>, ` +
+          `but you are signed in as <strong>${esc(me.email)}</strong>.</p>`;
+      } else {
+        body = `<p>You have been invited to join <strong>${esc(inv.org_name)}</strong> ` +
+          `as <strong>${esc(inv.role)}</strong>.</p>
+          <div class="row">
+            <button class="btn primary" data-on:click="@post('/invite/${esc(inv.id)}/accept')">Accept</button>
+            <button class="btn" data-on:click="@post('/invite/${esc(inv.id)}/decline')">Decline</button>
+          </div>`;
+      }
+      return page("invite.html", { __INVITE__: `<div id="invite-body">${body}</div>` });
+    }
+
+    const acc = p.match(/^\/invite\/([^/]+)\/(accept|decline)$/);
+    if (acc && req.method === "POST") {
+      const inv = store.invite(decodeURIComponent(acc[1]!));
+      const me = store.userById(uid)!;
+      if (!inv || inv.status !== "pending" || inv.expires_at < Date.now())
+        return stream((s) => s.patch(`<div id="invite-body"><p class="muted">That invitation is no longer valid.</p></div>`));
+      // An invitation is addressed to one email; anyone else is refused.
+      if (inv.email !== me.email) return new Response("not your invitation", { status: 403 });
+
+      if (acc[2] === "decline") {
+        store.setInviteStatus(inv.id, "rejected");
+        return stream((s) => s.patch(`<div id="invite-body"><p class="muted">Invitation declined.</p></div>`));
+      }
+      store.setInviteStatus(inv.id, "accepted");
+      try {
+        store.addMember(`mem_${crypto.randomUUID().replaceAll("-", "")}`, inv.organization_id, uid, inv.role);
+      } catch { /* already a member: accepting twice is harmless */ }
+      store.setActiveOrg(await sessionHash(), inv.organization_id);
+      return sseRedirect("/org");
     }
 
     // ---- settings ----

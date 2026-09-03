@@ -70,12 +70,16 @@ Two items in the original version of this list were wrong and have been dropped:
   the user is gone. `user-cleanup.ts` belongs to the admin path, not here. Preserved.
 
 ### 2. Organizations — `dashboard/settings/organization` + invites
-- [ ] Port `organization/+page.server.ts` (56) + `+page.svelte` (260)
-- [ ] Port `org-bootstrap.ts` (90): every user gets an org on first login
-- [ ] Members list, roles, remove member, transfer ownership
-- [ ] Create + revoke invites; accept flow at `/invite/{token}` (public route, 49)
-- [ ] Scope walls/handles/testimonials to the active org, not just the user
-- [ ] Browser suite `verify-org.mjs`
+- [x] Port `organization/+page.server.ts` (56) + `+page.svelte` (260)
+- [x] Port `org-bootstrap.ts` (90): every user gets an org on first login
+- [x] Members list, roles, remove member, org switching
+- [x] Create + revoke invites; accept/decline flow at `/invite/{id}`
+- [ ] **Scope walls/handles/testimonials to the active org, not just the user** — the one
+      piece left. It touches every existing query and suite, so it is deliberately its own
+      commit rather than bolted onto the org work.
+- [x] Browser suite `verify-org.mjs` (20 assertions)
+
+Transfer-ownership is not in the original and was dropped from this list.
 
 ### 3. Admin — `admin/*`
 - [ ] Port `admin/+layout.server.ts` (17): admin-only gate, distinct from the member gate
@@ -116,3 +120,12 @@ Append one line per firing: what was attempted, what landed, what broke.
   assertions — the server rule is the one that matters. (c) the ID-DRIFT check in
   check-datastar.mjs narrowed now that Go is frozen; the browser suites cover what it lost,
   verified by injecting a renamed patch target. Suites now report progress on crash.
+- **Run 1 (cont.)** — Item 2 mostly done: personal-org bootstrap, members, roles,
+  invitations with accept/decline, org switching. 20 assertions, all green first try; gate
+  at 154. Found and fixed a real leak while writing it: the active org is pinned on the
+  session, so a REMOVED member kept reading the org they had been removed from until they
+  signed out. `activeOrgFor` now re-checks membership on every request and falls back.
+  Also worth recording: in the SvelteKit original every mutation on this page is a
+  client-side RPC call into better-auth (`authClient.organization.*`); under Datastar they
+  are all ordinary server routes and the browser makes no API calls of its own.
+  REMAINING for the next run: scope walls/handles/testimonials to the active org.

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organisation &middot; Social Proof</title>
+<script type="module" src="/datastar.js"></script>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<!--
+  Signals here hold only what is being typed. Every mutation on this page is a
+  server route; in the SvelteKit original the same mutations are client-side
+  RPC calls into better-auth. Note also that the bound inputs are NOT declared
+  below — a data-signals declaration wins over the element and would blank it.
+-->
+<body data-signals="{_busy: false}">
+<div class="shell">
+
+  <nav class="top">
+    <span class="links"><a href="/">Dashboard</a> <a href="/handles">Handles</a>
+      <a href="/walls">Walls</a> <a href="/settings">Settings</a>
+      <a href="/org" class="on">Organisation</a></span>
+    <span class="who">Signed in as <strong>__EMAIL__</strong>
+      <button class="btn sm" data-on:click="@post('/logout')">Sign out</button></span>
+  </nav>
+
+  <header>
+    <h1>__ORGNAME__</h1>
+    <p class="muted">Who can see and manage this workspace
+      <span class="badge">__BACKEND__</span></p>
+  </header>
+
+  <div id="org-msg"></div>
+  __SWITCHER__
+
+  <section class="card pad">
+    <h2>Members</h2>
+    __MEMBERS__
+  </section>
+
+  <section class="card pad">
+    <h2>Pending invitations</h2>
+    __INVITEFORM__
+    __INVITES__
+  </section>
+
+  <section class="card pad">
+    <h2>New organisation</h2>
+    <form data-on:submit__prevent="@post('/org')" data-indicator:_busy>
+      <div class="row">
+        <label class="grow"><span>Name</span>
+          <input type="text" maxlength="80" data-bind:org-name placeholder="Acme Tools"></label>
+        <button type="submit" class="btn primary" data-attr:disabled="$_busy || !$orgName"
+                data-text="$_busy ? 'Creating…' : 'Create'">Create</button>
+      </div>
+    </form>
+  </section>
+
+</div>
+</body>
+</html>
