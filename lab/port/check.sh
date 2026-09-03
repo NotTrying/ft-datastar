@@ -34,8 +34,13 @@ for i in $(seq 1 40); do
 done
 curl -sf -o /dev/null http://localhost:8102/login && curl -sf -o /dev/null http://localhost:8103/login ; ok $?
 
-step "6/6  browser suites (13 dashboard + 11 auth + 15 scan + 17 embed, per backend)"
-for suite in verify-port verify-auth verify-scan verify-embed; do
+# The Go port is FROZEN at four features (see PLAN.md). These four suites still
+# run against it, so it cannot silently rot; new suites are TypeScript-only.
+BOTH_SUITES="verify-port verify-auth verify-scan verify-embed"
+TS_ONLY_SUITES=$(ls verify-*.mjs 2>/dev/null | sed 's/\.mjs$//' | grep -vE "^(verify-port|verify-auth|verify-scan|verify-embed)$" | tr '\n' ' ')
+
+step "6/6  browser suites (Go: 4 frozen suites · TypeScript: all)"
+for suite in $BOTH_SUITES; do
   for pair in "Go:8102" "TS:8103"; do
     name=${pair%%:*}; port=${pair##*:}
     printf "  %-14s %-3s " "$suite" "$name"
@@ -45,6 +50,14 @@ for suite in verify-port verify-auth verify-scan verify-embed; do
       echo "FAILED"; grep -E "FAIL|problem" <<<"$out" | sed 's/^/      /'; FAIL=1
     fi
   done
+done
+for suite in $TS_ONLY_SUITES; do
+  printf "  %-16s TS  " "$suite"
+  if out=$(bun "$suite.mjs" "http://localhost:8103" "/tmp/chk-$suite-TS.png" 2>&1); then
+    echo "$(grep -c PASS <<<"$out") passed"
+  else
+    echo "FAILED"; grep -E "FAIL|problem" <<<"$out" | sed 's/^/      /'; FAIL=1
+  fi
 done
 
 printf "\n\033[1m%s\033[0m\n" "$([ $FAIL -eq 0 ] && echo "All checks passed." || echo "Checks FAILED.")"
