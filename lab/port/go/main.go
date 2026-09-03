@@ -2,9 +2,6 @@ package main
 
 // Datastar port of the social-proof dashboard. Go 1.22+ stdlib routing,
 // SQLite for storage, SSE for every update. No framework, no build step.
-//
-// Auth is out of scope for the lab: every request is the same demo user, and
-// the ownership checks in store.go are written as if it were real.
 
 import (
 	"crypto/rand"
@@ -17,8 +14,6 @@ import (
 	"os"
 	"strings"
 )
-
-const userID = "demo-user"
 
 // ---------- SSE ----------
 
@@ -40,11 +35,17 @@ func newSSE(w http.ResponseWriter) (*sse, bool) {
 	return &sse{w, f}, true
 }
 
+func (s *sse) patch(elems string) { s.patchWith("", elems) }
+
+// opts is pre-formatted dataline text (e.g. "selector body\ndata: mode append").
 // One `data: elements ` line per line of HTML — required by the spec. A single
 // missing prefix makes the patch silently do nothing.
-func (s *sse) patch(elems string) {
+func (s *sse) patchWith(opts, elems string) {
 	var b strings.Builder
 	b.WriteString("event: datastar-patch-elements\n")
+	if opts != "" {
+		b.WriteString("data: " + opts + "\n")
+	}
 	for _, line := range strings.Split(strings.TrimRight(elems, "\n"), "\n") {
 		b.WriteString("data: elements " + line + "\n")
 	}
@@ -104,34 +105,35 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	Seed(store)
+	demoUser := SeedAccount(store)
+	Seed(store, demoUser)
 
-	// Redraw the three regions a mutation can affect. Targeted patches, not a
-	// whole-page replace: Datastar morphs each by id.
-	redraw := func(s *sse, tab string) {
-		c := store.Counts(userID)
-		s.patch(RenderStats(c))
-		s.patch(RenderTabs(c, tab))
-		s.patch(RenderList(store.List(userID, tab), tab, store.Count(userID)))
-	}
-
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		tpl, err := os.ReadFile(shared + "/dashboard.html")
+	page := func(w http.ResponseWriter, name string, subs ...string) {
+		tpl, err := os.ReadFile(shared + "/" + name)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		c := store.Counts(userID)
-		page := strings.ReplaceAll(string(tpl), "__BACKEND__", "Go")
-		page = strings.Replace(page, "__STATS__", RenderStats(c), 1)
-		page = strings.Replace(page, "__TABS__", RenderTabs(c, "pending"), 1)
-		page = strings.Replace(page, "__LIST__",
-			RenderList(store.List(userID, "pending"), "pending", store.Count(userID)), 1)
+		out := strings.ReplaceAll(string(tpl), "__BACKEND__", "Go")
+		for i := 0; i+1 < len(subs); i += 2 {
+			out = strings.Replace(out, subs[i], subs[i+1], 1)
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, page)
-	})
+		fmt.Fprint(w, out)
+	}
+
+	// Redraw the regions a mutation can affect. Targeted patches, not a
+	// whole-page replace: Datastar morphs each by id.
+	redraw := func(s *sse, uid, tab string) {
+		c := store.Counts(uid)
+		s.patch(RenderStats(c))
+		s.patch(RenderTabs(c, tab))
+		s.patch(RenderList(store.List(uid, tab), tab, store.Count(uid)))
+	}
+
+	mux := http.NewServeMux()
+
+	// ---- public ----
 
 	mux.HandleFunc("GET /datastar.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
@@ -145,17 +147,83 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	// Tab switch.
-	mux.HandleFunc("GET /testimonials", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie(cookieName); err == nil {
+			if _, ok := store.UserForToken(c.Value); ok {
+				http.Redirect(w, r, "/", http.StatusFound)
+				return
+			}
+		}
+		page(w, "login.html")
+	})
+
+	// contentType:'form' means the password arrives as a form field, never as
+	// a signal. See the comment at the top of shared/login.html.
+	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
+		if !isDatastar(r) || !sameOrigin(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			_ = r.ParseForm()
+		}
+		// Order matters: newSSE flushes the response headers, so Set-Cookie
+		// has to be written BEFORE the stream opens or it is silently dropped.
+		uid, good := store.Authenticate(r.FormValue("email"), r.FormValue("password"))
+		if good {
+			tok, exp := store.NewSession(uid)
+			setSessionCookie(w, r, tok, exp)
+		}
+		s, ok := newSSE(w)
+		if !ok {
+			return
+		}
+		if !good {
+			// One message for both cases: saying which half was wrong
+			// enumerates accounts.
+			s.patch(`<div id="login-msg"><div class="alert err" role="alert">` +
+				`That email and password do not match.</div></div>`)
+			return
+		}
+		s.patchWith("selector body\ndata: mode append",
+			`<script>setTimeout(() => window.location = "/")</script>`)
+	})
+
+	mux.HandleFunc("POST /logout", func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie(cookieName); err == nil {
+			store.DropSession(c.Value)
+		}
+		clearSessionCookie(w)
+		if isDatastar(r) {
+			sseRedirect(w, "/login")
+			return
+		}
+		http.Redirect(w, r, "/login", http.StatusFound)
+	})
+
+	// ---- protected ----
+
+	mux.HandleFunc("GET /{$}", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
+		c := store.Counts(uid)
+		page(w, "dashboard.html",
+			"__EMAIL__", esc(store.EmailFor(uid)),
+			"__STATS__", RenderStats(c),
+			"__TABS__", RenderTabs(c, "pending"),
+			"__LIST__", RenderList(store.List(uid, "pending"), "pending", store.Count(uid)))
+	}))
+
+	// Tab switch. A GET, and deliberately read-only: a GET is a CORS-simple
+	// request, so anything that mutates must not be reachable by one.
+	mux.HandleFunc("GET /testimonials", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
 		in := readSignals(r)
 		if s, ok := newSSE(w); ok {
-			redraw(s, in.Tab)
+			redraw(s, uid, in.Tab)
 		}
-	})
+	}))
 
 	// Add by hand. Validation failures patch the message region and stop —
 	// no redirect, no page reload, no lost form state.
-	mux.HandleFunc("POST /testimonials", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /testimonials", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
 		in := readSignals(r)
 		s, ok := newSSE(w)
 		if !ok {
@@ -166,7 +234,7 @@ func main() {
 			s.patch(RenderMsg("err", esc(bad.Message)))
 			return
 		}
-		switch err := store.Insert(userID, newID(), row); {
+		switch err := store.Insert(uid, newID(), row); {
 		case err == ErrDuplicate:
 			s.patch(RenderMsg("err", "You have already added that one."))
 			return
@@ -176,35 +244,35 @@ func main() {
 		}
 		s.patch(RenderMsg("ok", "Added. It is waiting in <strong>Pending</strong> for you to approve."))
 		s.signals(`{content: '', authorName: '', authorHandle: '', sourceUrl: '', postedAt: '', tab: 'pending'}`)
-		redraw(s, "pending")
-	})
+		redraw(s, uid, "pending")
+	}))
 
-	mux.HandleFunc("PATCH /testimonials/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("PATCH /testimonials/{id}", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
 		in := readSignals(r)
 		status := r.URL.Query().Get("status")
 		if status != "approved" && status != "dismissed" {
 			http.Error(w, `status must be "approved" or "dismissed"`, 400)
 			return
 		}
-		if !store.SetStatus(userID, r.PathValue("id"), status) {
+		if !store.SetStatus(uid, r.PathValue("id"), status) {
 			http.Error(w, "not found", 404)
 			return
 		}
 		if s, ok := newSSE(w); ok {
-			redraw(s, in.Tab)
+			redraw(s, uid, in.Tab)
 		}
-	})
+	}))
 
-	mux.HandleFunc("DELETE /testimonials/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /testimonials/{id}", requireUser(store, func(w http.ResponseWriter, r *http.Request, uid string) {
 		in := readSignals(r)
-		if !store.Delete(userID, r.PathValue("id")) {
+		if !store.Delete(uid, r.PathValue("id")) {
 			http.Error(w, "not found", 404)
 			return
 		}
 		if s, ok := newSSE(w); ok {
-			redraw(s, in.Tab)
+			redraw(s, uid, in.Tab)
 		}
-	})
+	}))
 
 	log.Printf("social-proof (Datastar/Go) on http://localhost:%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))

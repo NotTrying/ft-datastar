@@ -83,3 +83,11 @@ input:focus,textarea:focus{outline:2px solid var(--acc);outline-offset:-1px}
   padding:48px 24px;text-align:center;color:var(--mut)}
 .empty h2{color:var(--fg);font-size:19px;margin:0 0 8px}
 [data-indicator-loading]{opacity:.6}
+
+/* login + nav */
+.narrow-shell{max-width:420px}
+.card.pad{padding:20px}
+nav.top{display:flex;justify-content:space-between;align-items:center;gap:12px;
+  padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:4px}
+nav.top .who{font-size:13px;color:var(--mut)}
+nav.top form{display:inline}

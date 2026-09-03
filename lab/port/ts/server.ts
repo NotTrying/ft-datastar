@@ -1,14 +1,15 @@
 // Datastar port of the social-proof dashboard. Web-standard fetch handler,
 // SQLite for storage, SSE for every update. No framework, no build step.
-//
-// Auth is out of scope for the lab: every request is the same demo user, and
-// the ownership checks in store.ts are written as if it were real.
 import { readFile } from "node:fs/promises";
 import { Store, STATUSES, Duplicate, type Status } from "./store.ts";
 import { validateManualTestimonial } from "./validate.ts";
 import { renderStats, renderTabs, renderList, renderMsg, esc } from "./render.ts";
+import {
+  COOKIE, SESSION_TTL_MS, hashPassword, verifyPassword, tokenHash, newToken,
+  sessionCookie, clearCookie, readCookie, isDatastar, sameOrigin, sseRedirect,
+  currentUser, requireUser,
+} from "./auth.ts";
 
-const USER = "demo-user";
 const SHARED = process.env.LAB_SHARED ?? "../shared";
 const store = new Store(process.env.LAB_DB ?? "social-proof.db");
 
@@ -17,10 +18,10 @@ const store = new Store(process.env.LAB_DB ?? "social-proof.db");
 class SSE {
   private enc = new TextEncoder();
   constructor(private c: ReadableStreamDefaultController) {}
-  // One `data: elements ` line per line of HTML — required by the spec. A
-  // single missing prefix makes the patch silently do nothing.
-  patch(elems: string) {
+  patch(elems: string, ...opts: string[]) {
     let out = "event: datastar-patch-elements\n";
+    for (const o of opts) out += `data: ${o}\n`;
+    // One `data: elements ` line per line of HTML — required by the spec.
     for (const line of elems.replace(/\n+$/, "").split("\n")) out += `data: elements ${line}\n`;
     this.c.enqueue(this.enc.encode(out + "\n"));
   }
@@ -29,18 +30,19 @@ class SSE {
   }
 }
 
-const stream = (fn: (s: SSE) => void) =>
+// Unlike a Go http.ResponseWriter, a Response is constructed with its headers,
+// so there is no way to start the stream before setting a cookie. The
+// header-ordering bug the Go port hit is unrepresentable here.
+const stream = (fn: (s: SSE) => void, headers: Record<string, string> = {}) =>
   new Response(new ReadableStream({
     start(c) { const s = new SSE(c); try { fn(s); } finally { c.close(); } },
-  }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } });
+  }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache", ...headers } });
 
-// Redraw the three regions a mutation can affect. Targeted patches, not a
-// whole-page replace: Datastar morphs each by id.
-function redraw(s: SSE, tab: Status) {
-  const c = store.counts(USER);
+function redraw(s: SSE, uid: string, tab: Status) {
+  const c = store.counts(uid);
   s.patch(renderStats(c));
   s.patch(renderTabs(c, tab));
-  s.patch(renderList(store.list(USER, tab), tab, store.total(USER)));
+  s.patch(renderList(store.list(uid, tab), tab, store.total(uid)));
 }
 
 // ---------- signals in ----------
@@ -56,72 +58,125 @@ async function readSignals(req: Request, url: URL) {
 const file = async (path: string, type: string) =>
   new Response(await readFile(path), { headers: { "content-type": type } });
 
+async function page(name: string, subs: Record<string, string> = {}) {
+  let out = (await readFile(`${SHARED}/${name}`, "utf8")).replaceAll("__BACKEND__", "TypeScript");
+  for (const [k, v] of Object.entries(subs)) out = out.replace(k, v);
+  return new Response(out, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
 // ---------- routes ----------
 
 async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const p = url.pathname;
+  const secure = url.protocol === "https:";
 
+  // ---- public ----
   if (p === "/datastar.js") return file(`${SHARED}/datastar.js`, "text/javascript; charset=utf-8");
   if (p === "/styles.css") return file(`${SHARED}/styles.css`, "text/css; charset=utf-8");
   if (p === "/favicon.ico") return new Response(null, { status: 204 });
 
-  if (p === "/" && req.method === "GET") {
-    const c = store.counts(USER);
-    const page = (await readFile(`${SHARED}/dashboard.html`, "utf8"))
-      .replaceAll("__BACKEND__", "TypeScript")
-      .replace("__STATS__", renderStats(c))
-      .replace("__TABS__", renderTabs(c, "pending"))
-      .replace("__LIST__", renderList(store.list(USER, "pending"), "pending", store.total(USER)));
-    return new Response(page, { headers: { "content-type": "text/html; charset=utf-8" } });
+  if (p === "/login" && req.method === "GET") {
+    if (await currentUser(store, req))
+      return new Response(null, { status: 302, headers: { location: "/" } });
+    return page("login.html");
   }
 
-  const { tab, input } = await readSignals(req, url);
+  // contentType:'form' means the password arrives as a form field, never as a
+  // signal. See the comment at the top of shared/login.html.
+  if (p === "/login" && req.method === "POST") {
+    if (!isDatastar(req) || !sameOrigin(req)) return new Response("forbidden", { status: 403 });
+    const form = await req.formData();
+    const email = String(form.get("email") ?? "");
+    const row = store.findUser(email);
+    // Hash regardless so a missing account and a wrong password take the same
+    // time — otherwise the response time enumerates registered emails.
+    const good = await verifyPassword(String(form.get("password") ?? ""),
+      row?.pw_hash ?? "$argon2id$v=19$m=65536,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    if (!row || !good)
+      // One message for both cases: saying which half was wrong enumerates accounts.
+      return stream((s) => s.patch(
+        `<div id="login-msg"><div class="alert err" role="alert">That email and password do not match.</div></div>`));
 
-  // Tab switch.
-  if (p === "/testimonials" && req.method === "GET") return stream((s) => redraw(s, tab));
-
-  // Add by hand. Validation failures patch the message region and stop —
-  // no redirect, no page reload, no lost form state.
-  if (p === "/testimonials" && req.method === "POST") {
-    const result = validateManualTestimonial(input);
-    if (!result.ok) return stream((s) => s.patch(renderMsg("err", esc(result.error))));
-    try {
-      store.insert(USER, crypto.randomUUID(), result.row);
-    } catch (e) {
-      const msg = e instanceof Duplicate ? "You have already added that one." : "Could not save that. Try again.";
-      return stream((s) => s.patch(renderMsg("err", msg)));
-    }
-    return stream((s) => {
-      s.patch(renderMsg("ok", "Added. It is waiting in <strong>Pending</strong> for you to approve."));
-      s.signals(`{content: '', authorName: '', authorHandle: '', sourceUrl: '', postedAt: '', tab: 'pending'}`);
-      redraw(s, "pending");
-    });
+    const tok = newToken();
+    const expires = new Date(Date.now() + SESSION_TTL_MS);
+    store.createSession(await tokenHash(tok), row.id, expires);
+    return sseRedirect("/", { "set-cookie": sessionCookie(tok, expires, secure) });
   }
 
-  const m = p.match(/^\/testimonials\/([^/]+)$/);
-  if (m) {
-    const id = decodeURIComponent(m[1]!);
-    if (req.method === "PATCH") {
-      const status = url.searchParams.get("status");
-      if (status !== "approved" && status !== "dismissed")
-        return new Response('status must be "approved" or "dismissed"', { status: 400 });
-      if (!store.setStatus(USER, id, status)) return new Response("not found", { status: 404 });
-      return stream((s) => redraw(s, tab));
-    }
-    if (req.method === "DELETE") {
-      if (!store.remove(USER, id)) return new Response("not found", { status: 404 });
-      return stream((s) => redraw(s, tab));
-    }
+  if (p === "/logout" && req.method === "POST") {
+    const tok = readCookie(req, COOKIE);
+    if (tok) store.dropSession(await tokenHash(tok));
+    const headers = { "set-cookie": clearCookie() };
+    return isDatastar(req)
+      ? sseRedirect("/login", headers)
+      : new Response(null, { status: 302, headers: { ...headers, location: "/login" } });
   }
 
-  return new Response("not found", { status: 404 });
+  // ---- protected ----
+  return requireUser(store, req, async (uid) => {
+    if (p === "/" && req.method === "GET") {
+      const c = store.counts(uid);
+      return page("dashboard.html", {
+        __EMAIL__: esc(store.emailFor(uid)),
+        __STATS__: renderStats(c),
+        __TABS__: renderTabs(c, "pending"),
+        __LIST__: renderList(store.list(uid, "pending"), "pending", store.total(uid)),
+      });
+    }
+
+    const { tab, input } = await readSignals(req, url);
+
+    // A GET, and deliberately read-only: a GET is a CORS-simple request, so
+    // anything that mutates must not be reachable by one.
+    if (p === "/testimonials" && req.method === "GET") return stream((s) => redraw(s, uid, tab));
+
+    if (p === "/testimonials" && req.method === "POST") {
+      const result = validateManualTestimonial(input);
+      if (!result.ok) return stream((s) => s.patch(renderMsg("err", esc(result.error))));
+      try {
+        store.insert(uid, crypto.randomUUID(), result.row);
+      } catch (e) {
+        const msg = e instanceof Duplicate
+          ? "You have already added that one." : "Could not save that. Try again.";
+        return stream((s) => s.patch(renderMsg("err", msg)));
+      }
+      return stream((s) => {
+        s.patch(renderMsg("ok", "Added. It is waiting in <strong>Pending</strong> for you to approve."));
+        s.signals(`{content: '', authorName: '', authorHandle: '', sourceUrl: '', postedAt: '', tab: 'pending'}`);
+        redraw(s, uid, "pending");
+      });
+    }
+
+    const m = p.match(/^\/testimonials\/([^/]+)$/);
+    if (m) {
+      const id = decodeURIComponent(m[1]!);
+      if (req.method === "PATCH") {
+        const status = url.searchParams.get("status");
+        if (status !== "approved" && status !== "dismissed")
+          return new Response('status must be "approved" or "dismissed"', { status: 400 });
+        if (!store.setStatus(uid, id, status)) return new Response("not found", { status: 404 });
+        return stream((s) => redraw(s, uid, tab));
+      }
+      if (req.method === "DELETE") {
+        if (!store.remove(uid, id)) return new Response("not found", { status: 404 });
+        return stream((s) => redraw(s, uid, tab));
+      }
+    }
+    return new Response("not found", { status: 404 });
+  });
 }
 
 // Sample rows so the dashboard has something to show. Mirrors the mock X data
 // the SvelteKit app ships in src/lib/server/sources/x.ts.
-function seed() {
-  if (store.total(USER) > 0) return;
+async function seed(): Promise<string> {
+  let user = store.findUser("owner@example.com");
+  if (!user) {
+    const id = crypto.randomUUID();
+    store.createUser(id, "owner@example.com", await hashPassword("correct-horse-battery"));
+    user = store.findUser("owner@example.com")!;
+  }
+  if (store.total(user.id) > 0) return user.id;
   const d = (s: string) => new Date(s);
   const rows: [string, string, string, string, string, string, Date, Status][] = [
     ["x", "https://x.com/janes/status/1", "janesmith", "Jane Smith", "Sold our house in nine days and answered the phone every time.", "scan", d("2026-07-14"), "pending"],
@@ -131,13 +186,14 @@ function seed() {
     ["x", "https://x.com/spam/status/5", "linkfarm22", "", "check out my crypto course link in bio", "scan", d("2026-06-01"), "dismissed"],
   ];
   for (const [platform, urlStr, handle, name, content, source, postedAt, status] of rows) {
-    store.insert(USER, crypto.randomUUID(), {
+    store.insert(user.id, crypto.randomUUID(), {
       source: source as "manual", platform, postId: urlStr, postUrl: urlStr,
       authorHandle: handle || null, authorName: name || null, content, postedAt,
     }, status);
   }
+  return user.id;
 }
-seed();
+await seed();
 
 const port = Number(process.env.PORT ?? 8083);
 console.log(`social-proof (Datastar/TypeScript) on http://localhost:${port}`);

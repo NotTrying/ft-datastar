@@ -11,6 +11,11 @@ const ok = [];
 const T = { timeout: 5000 };
 
 await p.goto(base, { waitUntil: "networkidle" });
+// auth gate: land on /login, sign in with the seeded account
+await p.waitForURL(/\/login$/, T);
+await p.click('button[type=submit]');
+await p.waitForURL((u) => !/\/login$/.test(u.toString()), T);
+ok.push(["unauthenticated visit redirects to /login, sign-in returns to dashboard", true]);
 ok.push(["seed renders 2 pending / 2 approved / 1 dismissed", JSON.stringify(await stats()) === "[2,2,1]"]);
 ok.push(["pending tab shows 2 cards", (await p.$$("#list .t")).length === 2]);
 

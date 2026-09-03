@@ -15,6 +15,11 @@
 <body data-signals="{tab: 'pending', _addOpen: false, content: '', authorName: '', authorHandle: '', sourceUrl: '', postedAt: '', _saving: false}">
 <div class="shell">
 
+  <nav class="top">
+    <span class="who">Signed in as <strong>__EMAIL__</strong></span>
+    <button class="btn sm" data-on:click="@post('/logout')">Sign out</button>
+  </nav>
+
   <header>
     <h1>Dashboard</h1>
     <p class="muted">Your social proof inbox <span class="badge">__BACKEND__</span></p>

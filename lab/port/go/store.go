@@ -56,6 +56,9 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, err
 	}
+	if _, err := db.Exec(authSchema); err != nil {
+		return nil, err
+	}
 	return &Store{db}, nil
 }
 
@@ -149,6 +152,18 @@ func (s *Store) Delete(userID, id string) bool {
 	}
 	n, _ := res.RowsAffected()
 	return n > 0
+}
+
+func (s *Store) EmailFor(userID string) string {
+	var e string
+	_ = s.db.QueryRow(`SELECT email FROM app_user WHERE id = ?`, userID).Scan(&e)
+	return e
+}
+
+func (s *Store) UserID(email string) (string, bool) {
+	var id string
+	err := s.db.QueryRow(`SELECT id FROM app_user WHERE email = ?`, email).Scan(&id)
+	return id, err == nil
 }
 
 func (s *Store) Count(userID string) int {

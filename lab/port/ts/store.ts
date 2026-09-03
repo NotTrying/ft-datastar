@@ -31,6 +31,18 @@ CREATE TABLE IF NOT EXISTS testimonial (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS testimonial_dedupe
   ON testimonial (user_id, platform, post_id);
+
+CREATE TABLE IF NOT EXISTS app_user (
+  id         TEXT PRIMARY KEY,
+  email      TEXT NOT NULL UNIQUE,
+  pw_hash    TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session (
+  token_hash TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
 `;
 
 export class Store {
@@ -83,6 +95,42 @@ export class Store {
   setStatus(userId: string, id: string, status: Status): boolean {
     return this.db.query(`UPDATE testimonial SET status = ? WHERE id = ? AND user_id = ?`)
       .run(status, id, userId).changes > 0;
+  }
+
+  // ---- accounts and sessions ----
+  // Password hashing is async and lives in auth.ts; the store only ever sees
+  // an already-hashed value.
+
+  createUser(id: string, email: string, pwHash: string) {
+    this.db.query(`INSERT INTO app_user (id, email, pw_hash, created_at) VALUES (?,?,?,?)`)
+      .run(id, email.trim().toLowerCase(), pwHash, Date.now());
+  }
+
+  findUser(email: string): { id: string; pw_hash: string } | null {
+    return this.db.query<{ id: string; pw_hash: string }, [string]>(
+      `SELECT id, pw_hash FROM app_user WHERE email = ?`).get(email.trim().toLowerCase());
+  }
+
+  emailFor(userId: string): string {
+    return this.db.query<{ email: string }, [string]>(
+      `SELECT email FROM app_user WHERE id = ?`).get(userId)?.email ?? "";
+  }
+
+  createSession(tokenHash: string, userId: string, expires: Date) {
+    this.db.query(`INSERT INTO session (token_hash, user_id, expires_at) VALUES (?,?,?)`)
+      .run(tokenHash, userId, expires.getTime());
+  }
+
+  userForToken(tokenHash: string): string | null {
+    const row = this.db.query<{ user_id: string; expires_at: number }, [string]>(
+      `SELECT user_id, expires_at FROM session WHERE token_hash = ?`).get(tokenHash);
+    if (!row) return null;
+    if (Date.now() > row.expires_at) { this.dropSession(tokenHash); return null; }
+    return row.user_id;
+  }
+
+  dropSession(tokenHash: string) {
+    this.db.query(`DELETE FROM session WHERE token_hash = ?`).run(tokenHash);
   }
 
   remove(userId: string, id: string): boolean {

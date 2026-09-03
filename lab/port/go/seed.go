@@ -4,7 +4,19 @@ import "time"
 
 // Sample rows so the dashboard has something to show. Mirrors the mock X data
 // the SvelteKit app ships in src/lib/server/sources/x.ts.
-func Seed(s *Store) {
+// SeedAccount creates the demo login and returns its user id.
+func SeedAccount(s *Store) string {
+	if id, ok := s.UserID("owner@example.com"); ok {
+		return id
+	}
+	id, err := s.CreateUser("owner@example.com", "correct-horse-battery")
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
+func Seed(s *Store, userID string) {
 	if s.Count(userID) > 0 {
 		return
 	}

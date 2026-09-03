@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in &middot; Social Proof</title>
+<script type="module" src="/datastar.js"></script>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<!--
+  Note what is NOT here: no `data-bind` on the password field, and no password
+  in `data-signals`.
+
+  Signals are plain text in the DOM, readable in devtools, and Datastar sends
+  *every* signal on the page with *every* request. A bound password would
+  therefore be posted to unrelated endpoints for as long as the page lived.
+
+  `@post('/login', {contentType: 'form'})` sends the form's own fields instead
+  of the signal store, so the password goes to exactly one endpoint and is
+  never held in client state at all.
+-->
+<body data-signals="{_busy: false}">
+<div class="shell narrow-shell">
+  <header>
+    <h1>Sign in</h1>
+    <p class="muted">Social proof inbox <span class="badge">__BACKEND__</span></p>
+  </header>
+
+  <section class="card pad">
+    <div id="login-msg"></div>
+
+    <form data-on:submit__prevent="@post('/login', {contentType: 'form'})" data-indicator:_busy>
+      <label>
+        <span>Email</span>
+        <input type="email" name="email" autocomplete="username" required
+               value="owner@example.com">
+      </label>
+      <label>
+        <span>Password</span>
+        <input type="password" name="password" autocomplete="current-password" required
+               value="correct-horse-battery">
+      </label>
+      <div class="row">
+        <button type="submit" class="btn primary" data-attr:disabled="$_busy"
+                data-text="$_busy ? 'Signing in…' : 'Sign in'">Sign in</button>
+        <span class="muted small">Demo credentials are pre-filled.</span>
+      </div>
+    </form>
+  </section>
+</div>
+</body>
+</html>
