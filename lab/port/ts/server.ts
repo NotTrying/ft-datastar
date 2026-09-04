@@ -12,6 +12,7 @@ import {
   validateProfile, issueOtp, checkOtp, clearOtp, lastOtp,
   renderProfile, renderSessions, renderMsg as renderSettingsMsg,
 } from "./settings.ts";
+import { isAdmin, isBanned, validateBan, renderAdminMsg, renderUsers } from "./admin.ts";
 import {
   ensurePersonalOrg, canManage, validateInvite, inviteExpiry,
   renderOrgMsg, renderOrgSwitcher, renderMembers, renderInvites,
@@ -72,7 +73,7 @@ async function readSignals(req: Request, url: URL) {
 const file = async (path: string, type: string) =>
   new Response(await readFile(path), { headers: { "content-type": type } });
 
-async function page(name: string, subs: Record<string, string> = {}) {
+async function basePage(name: string, subs: Record<string, string> = {}) {
   let out = (await readFile(`${SHARED}/${name}`, "utf8")).replaceAll("__BACKEND__", "TypeScript");
   for (const [k, v] of Object.entries(subs)) out = out.replace(k, v);
   return new Response(out, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -90,10 +91,27 @@ async function handle(req: Request): Promise<Response> {
   if (p === "/styles.css") return file(`${SHARED}/styles.css`, "text/css; charset=utf-8");
   if (p === "/favicon.ico") return new Response(null, { status: 204 });
 
+  // Dev-only, gated on LAB_DEV=1 which no normal run sets. Mints a disposable
+  // account so a suite that bans or deletes someone need not consume a seeded
+  // one the other suites depend on. PUBLIC by necessity — the caller is signed
+  // out at the point it needs the account to exist.
+  if (p === "/dev/make-user" && process.env.LAB_DEV === "1") {
+    const email = (url.searchParams.get("email") ?? "").trim().toLowerCase();
+    if (!email) return new Response("email required", { status: 400 });
+    let u = store.findUser(email);
+    if (!u) {
+      const newId = crypto.randomUUID();
+      store.createUser(newId, email, await hashPassword("correct-horse-battery"), "Disposable User");
+      u = store.findUser(email)!;
+      ensurePersonalOrg(store, { id: u.id, email, name: "Disposable User" });
+    }
+    return new Response(JSON.stringify({ id: u.id, email }), { headers: { "content-type": "application/json" } });
+  }
+
   if (p === "/login" && req.method === "GET") {
     if (await currentUser(store, req))
       return new Response(null, { status: 302, headers: { location: "/" } });
-    return page("login.html");
+    return basePage("login.html");
   }
 
   // contentType:'form' means the password arrives as a form field, never as a
@@ -111,6 +129,13 @@ async function handle(req: Request): Promise<Response> {
       // One message for both cases: saying which half was wrong enumerates accounts.
       return stream((s) => s.patch(
         `<div id="login-msg"><div class="alert err" role="alert">That email and password do not match.</div></div>`));
+
+    // A banned account is refused at sign-in rather than being allowed a
+    // session that every later request then rejects.
+    const acct = store.userById(row.id)!;
+    if (acct.banned && (acct.ban_expires === null || acct.ban_expires > Date.now()))
+      return stream((s) => s.patch(
+        `<div id="login-msg"><div class="alert err" role="alert">That account has been suspended.</div></div>`));
 
     const tok = newToken();
     const expires = new Date(Date.now() + SESSION_TTL_MS);
@@ -189,6 +214,10 @@ async function handle(req: Request): Promise<Response> {
     if (orgId !== pinnedOrg) store.setActiveOrg(hash, orgId);
     // Every data route below is scoped to this org, never to the user.
     const org = orgId!;
+    const me = store.userById(uid)!;
+    const adminLink = isAdmin(me) ? ` <a href="/admin">Admin</a>` : "";
+    const page = (name: string, subs: Record<string, string> = {}) =>
+      basePage(name, { __ADMINLINK__: adminLink, ...subs });
     if (p === "/" && req.method === "GET") {
       const c = store.counts(org);
       return page("dashboard.html", {
@@ -221,6 +250,63 @@ async function handle(req: Request): Promise<Response> {
         s.signals(`{wallName: ''}`);
         s.patch(renderWalls(store.listWalls(org), origin));
       });
+    }
+
+    // ---- admin ----
+
+    if (p.startsWith("/admin")) {
+      // Checked on EVERY admin route, not once in a shared gate. The original
+      // carries the same warning: in SvelteKit a form action does not run the
+      // layout load, so a single gate would not have covered the mutations.
+      if (!isAdmin(me)) return new Response("Admin access required", { status: 403 });
+
+      const usersPage = () => {
+        const users = store.listUsers();
+        const banned = users.filter(isBanned).length;
+        return page("admin.html", {
+          __EMAIL__: esc(me.email),
+          __SUMMARY__: `${users.length} user${users.length === 1 ? "" : "s"}` +
+            (banned ? `, ${banned} banned` : ""),
+          __USERS__: renderUsers(store, users, uid),
+        });
+      };
+      if (p === "/admin" && req.method === "GET") return usersPage();
+
+      const refresh = (s: SSE, kind: "ok" | "err", text: string) => {
+        s.patch(renderAdminMsg(kind, text));
+        if (kind === "ok") {
+          s.patch(renderUsers(store, store.listUsers(), uid));
+          s.signals(`{_banning: '', banReason: ''}`);
+        }
+      };
+
+      const bm = p.match(/^\/admin\/users\/([^/]+)\/(ban|unban)$/);
+      if (bm && req.method === "POST") {
+        const targetId = decodeURIComponent(bm[1]!);
+        const target = store.userById(targetId);
+        if (!target) return new Response("not found", { status: 404 });
+
+        if (bm[2] === "unban") {
+          store.unbanUser(targetId);
+          return stream((s) => refresh(s, "ok", "User unbanned successfully"));
+        }
+        const v = validateBan(uid, targetId, String(input.banReason ?? ""));
+        if (!v.ok) return stream((s) => refresh(s, "err", esc(v.error)));
+        // Ends their sessions too, so the ban bites immediately.
+        store.banUser(targetId, v.reason, null);
+        return stream((s) => refresh(s, "ok", "User banned successfully"));
+      }
+
+      const dm = p.match(/^\/admin\/users\/([^/]+)$/);
+      if (dm && req.method === "DELETE") {
+        const targetId = decodeURIComponent(dm[1]!);
+        if (targetId === uid)
+          return stream((s) => refresh(s, "err", "You cannot delete your own account here"));
+        if (!store.userById(targetId)) return new Response("not found", { status: 404 });
+        store.deleteUser(targetId);
+        return stream((s) => refresh(s, "ok",
+          "User deleted — account, memberships and any org left empty removed."));
+      }
     }
 
     // ---- organisation ----
@@ -477,10 +563,14 @@ async function handle(req: Request): Promise<Response> {
       });
     }
 
-    // Dev-only: lets the browser suite read the OTP the mock mailer "sent".
-    // Gated on LAB_DEV_OTP=1, which no normal run sets.
-    if (p === "/dev/last-otp" && process.env.LAB_DEV_OTP === "1")
+    // Dev-only affordances for the browser suites, gated on LAB_DEV=1 which no
+    // normal run sets. The first lets a suite read the OTP the mock mailer
+    // "sent"; the second mints a disposable account so a suite that bans or
+    // deletes someone does not have to consume a seeded one that other suites
+    // depend on.
+    if (p === "/dev/last-otp" && process.env.LAB_DEV === "1")
       return new Response(JSON.stringify(lastOtp ?? {}), { headers: { "content-type": "application/json" } });
+
 
     const wm = p.match(/^\/walls\/([^/]+)$/);
     if (wm) {
@@ -675,8 +765,10 @@ async function seed(): Promise<string> {
   const orgId = ensurePersonalOrg(store, { id: user.id, email: "owner@example.com", name: "Sam Owner" });
   if (store.total(orgId) > 0) return user.id;
 
-  // Pro so the handle and testimonial caps are exercised but not in the way.
+  // Pro so the handle and testimonial caps are exercised but not in the way,
+  // and an admin so the admin area is reachable at all.
   store.setPlan(user.id, "pro");
+  store.setRole(user.id, "admin");
   try { store.addHandle(orgId, user.id, "acmetools"); } catch { /* already there */ }
 
   const d = (s: string) => new Date(s);

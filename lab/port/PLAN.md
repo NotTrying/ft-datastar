@@ -82,13 +82,17 @@ Two items in the original version of this list were wrong and have been dropped:
 
 Transfer-ownership is not in the original and was dropped from this list.
 
-### 3. Admin — `admin/*`
-- [ ] Port `admin/+layout.server.ts` (17): admin-only gate, distinct from the member gate
-- [ ] Port `admin/users/+page.server.ts` (114) + `+page.svelte` (255): list, search, ban/unban, impersonate if present
-- [ ] Admin overview `admin/+page.svelte` (35) with real counts
-- [ ] A non-admin must get 403/redirect — assert it
-- [ ] Browser suite `verify-admin.mjs`
-- [ ] SKIP `admin/subscriptions` (Stripe)
+### 3. Admin — `admin/*` — DONE
+- [x] Admin-only gate, re-checked on every admin route rather than once
+- [x] Port `admin/users/+page.server.ts` (114) + `+page.svelte` (255): list, ban/unban, delete
+- [x] Admin overview counts (users, banned) in the page header
+- [x] A non-admin gets 403 on the page AND on the mutations — asserted
+- [x] Browser suite `verify-admin.mjs` (17 assertions)
+- [x] SKIPPED `admin/subscriptions` (Stripe), as agreed
+
+Impersonation exists in the original's plugin list but is not used by the page, so it is not
+ported. Deletion here does the data half only — the original routes it through better-auth so
+the `user.delete` hook can cancel the org's Stripe subscription, and billing is out of scope.
 
 ### 4. Avatar proxy — `api/v1/avatar/[id]`
 - [ ] Port (74). Takes a testimonial id, never a user-supplied URL.
@@ -142,3 +146,13 @@ Append one line per firing: what was attempted, what landed, what broke.
   resolves instantly and the next navigation aborts the redirect mid-flight. Waiting on the
   real `load` event fixed it; verified across two consecutive full runs, since one green run
   proved nothing here. check.sh now surfaces CRASH lines, not just FAIL.
+- **Run 2 (cont.)** — Item 3 done: admin gate, user list, ban/unban, delete. 17 assertions,
+  green first try; gate at 177 across two consecutive runs. The gate is re-checked on every
+  admin route rather than once, keeping the original's discipline — it warns that SvelteKit
+  form actions do not run the layout `load`, so a single gate would have left the mutations
+  open. Banning ends the target's sessions and refuses them at sign-in, so it bites at once
+  instead of waiting for a cookie to expire; asserted both ways. Deleting a user also removes
+  memberships and any org left with no members, rather than leaving orphaned rows owning
+  testimonials nobody can reach. One test-infrastructure fix: the admin suite deletes an
+  account, so it now mints a disposable one through a dev-gated route instead of consuming a
+  seeded account the org and settings suites depend on — suites share one database.

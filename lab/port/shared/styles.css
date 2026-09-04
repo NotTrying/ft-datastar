@@ -126,3 +126,9 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut)
 /* organisation */
 .member .plat,.invite .plat{text-transform:capitalize}
 #org-switcher .btn.primary{cursor:default}
+
+/* admin */
+.adminuser.banned{opacity:.72;border-style:dashed}
+.plat.banned-tag{background:color-mix(in srgb,var(--err) 20%,transparent);color:var(--err)}
+.banform{padding:0 18px 14px;margin-top:-8px}
+.banform form{gap:0}

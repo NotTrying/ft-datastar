@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin &middot; Social Proof</title>
+<script type="module" src="/datastar.js"></script>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<!-- `_banning` holds the id of the row whose ban form is open, so the reason
+     input belongs to that row alone rather than being shared across the list. -->
+<body data-signals="{_banning: ''}">
+<div class="shell">
+  <nav class="top">
+    <span class="links"><a href="/">Dashboard</a> <a href="/handles">Handles</a>
+      <a href="/walls">Walls</a> <a href="/settings">Settings</a>
+      <a href="/org">Organisation</a> <a href="/admin" class="on">Admin</a></span>
+    <span class="who">Signed in as <strong>__EMAIL__</strong>
+      <button class="btn sm" data-on:click="@post('/logout')">Sign out</button></span>
+  </nav>
+
+  <header>
+    <h1>Admin</h1>
+    <p class="muted">__SUMMARY__ <span class="badge">__BACKEND__</span></p>
+  </header>
+
+  <div id="admin-msg"></div>
+  <section class="card pad">
+    <h2>All users</h2>
+    __USERS__
+  </section>
+</div>
+</body>
+</html>

@@ -82,7 +82,14 @@ export function sseRedirect(to: string, headers: Record<string, string> = {}): R
 export async function currentUser(store: Store, req: Request): Promise<string | null> {
   const tok = readCookie(req, COOKIE);
   if (!tok) return null;
-  return store.userForToken(await tokenHash(tok));
+  const uid = store.userForToken(await tokenHash(tok));
+  if (!uid) return null;
+  // Banning revokes sessions, but a ban applied by any other path must still
+  // take effect immediately rather than waiting for the cookie to expire.
+  const u = store.userById(uid);
+  if (!u) return null;
+  if (u.banned && (u.ban_expires === null || u.ban_expires > Date.now())) return null;
+  return uid;
 }
 
 // Guard for every protected route.

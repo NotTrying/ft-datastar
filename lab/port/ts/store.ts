@@ -29,6 +29,11 @@ export type WallItemRow = {
   author_handle: string | null; author_name: string | null; posted_at: number | null;
 };
 
+export type AdminUserRow = {
+  id: string; email: string; name: string | null; role: string; plan: string;
+  banned: number; ban_reason: string | null; ban_expires: number | null; created_at: number;
+};
+
 export type SessionRow = {
   token_hash: string; created_at: number; expires_at: number; user_agent: string | null;
 };
@@ -72,6 +77,10 @@ CREATE TABLE IF NOT EXISTS app_user (
   name       TEXT,
   pw_hash    TEXT NOT NULL,
   plan       TEXT NOT NULL DEFAULT 'free',
+  role       TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin')),
+  banned     INTEGER NOT NULL DEFAULT 0,
+  ban_reason TEXT,
+  ban_expires INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS session (
@@ -229,9 +238,64 @@ export class Store {
 
   // ---- profile + sessions ----
 
-  userById(id: string): { id: string; email: string; name: string | null; plan: string } | null {
-    return this.db.query<{ id: string; email: string; name: string | null; plan: string }, [string]>(
-      `SELECT id, email, name, plan FROM app_user WHERE id = ?`).get(id);
+  userById(id: string): AdminUserRow | null {
+    return this.db.query<AdminUserRow, [string]>(
+      `SELECT id, email, name, role, plan, banned, ban_reason, ban_expires, created_at
+         FROM app_user WHERE id = ?`).get(id);
+  }
+
+  // ---- admin ----
+
+  listUsers(): AdminUserRow[] {
+    return this.db.query<AdminUserRow, []>(
+      `SELECT id, email, name, role, plan, banned, ban_reason, ban_expires, created_at
+         FROM app_user ORDER BY created_at DESC`).all();
+  }
+
+  setRole(id: string, role: "user" | "admin") {
+    this.db.query(`UPDATE app_user SET role = ? WHERE id = ?`).run(role, id);
+  }
+
+  /**
+   * Banning also ends the target's sessions. A bare UPDATE would leave them
+   * signed in until their cookie expired, which is the whole point of a ban —
+   * the original relies on better-auth's banUser doing the same.
+   */
+  banUser(id: string, reason: string, expires: number | null): boolean {
+    const changed = this.db.query(`UPDATE app_user SET banned = 1, ban_reason = ?, ban_expires = ? WHERE id = ?`)
+      .run(reason, expires, id).changes > 0;
+    if (changed) this.db.query(`DELETE FROM session WHERE user_id = ?`).run(id);
+    return changed;
+  }
+
+  unbanUser(id: string): boolean {
+    return this.db.query(`UPDATE app_user SET banned = 0, ban_reason = NULL, ban_expires = NULL WHERE id = ?`)
+      .run(id).changes > 0;
+  }
+
+  /**
+   * Delete a user and everything that hangs off them. The original routes this
+   * through better-auth's removeUser so the user.delete hook fires (cancelling
+   * the org's Stripe subscription); billing is out of scope here, so this does
+   * the data half only. Orgs left with no members go too, rather than becoming
+   * unreachable rows owning testimonials nobody can see.
+   */
+  deleteUser(id: string): boolean {
+    const orgs = this.orgsFor(id).map((o) => o.id);
+    this.db.query(`DELETE FROM session WHERE user_id = ?`).run(id);
+    this.db.query(`DELETE FROM member WHERE user_id = ?`).run(id);
+    for (const orgId of orgs) {
+      const left = this.db.query<{ n: number }, [string]>(
+        `SELECT count(*) AS n FROM member WHERE organization_id = ?`).get(orgId)!.n;
+      if (left === 0) {
+        for (const t of ["testimonial", "monitored_handle", "wall", "scan_log", "invitation"]) {
+          const col = t === "invitation" ? "organization_id" : "org_id";
+          this.db.query(`DELETE FROM ${t} WHERE ${col} = ?`).run(orgId);
+        }
+        this.db.query(`DELETE FROM organization WHERE id = ?`).run(orgId);
+      }
+    }
+    return this.db.query(`DELETE FROM app_user WHERE id = ?`).run(id).changes > 0;
   }
 
   setUserName(id: string, name: string) {
