@@ -116,10 +116,9 @@ not fire again tomorrow, and leave a short summary as the final commit.
 
 ## Progress log
 
-**ALL ITEMS COMPLETE — please pause this Routine.** Every checklist item above is done and
-the gate is green at 201 assertions across two consecutive runs. The Routine is a daily cron
-and will fire again tomorrow morning unless paused; this run has no MCP tools and cannot
-delete it.
+**ALL ITEMS COMPLETE.** Every checklist item above is done and the gate is green at 201
+assertions across two consecutive runs. The Routine has been deleted, so there are no
+further scheduled runs.
 
 Append one line per firing: what was attempted, what landed, what broke.
 
