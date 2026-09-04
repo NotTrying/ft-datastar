@@ -94,18 +94,20 @@ Impersonation exists in the original's plugin list but is not used by the page, 
 ported. Deletion here does the data half only — the original routes it through better-auth so
 the `user.delete` hook can cancel the org's Stripe subscription, and billing is out of scope.
 
-### 4. Avatar proxy — `api/v1/avatar/[id]`
-- [ ] Port (74). Takes a testimonial id, never a user-supplied URL.
-- [ ] Wire into the wall renderer (`sp-avatar`), replacing the initials fallback when present
-- [ ] Assert a wall visitor's IP never reaches the platform CDN (no third-party img src)
+### 4. Avatar proxy — `api/v1/avatar/[id]` — DONE
+- [x] Ported. Takes a testimonial id, never a user-supplied URL (SSRF).
+- [x] Wired into the wall renderer, replacing the initials fallback when an avatar exists
+- [x] Asserted: every wall image points at our own proxy, none at a third-party host
+- [x] Browser suite `verify-avatar.mjs` (13 assertions)
 
-### 5. Liveness — `lib/server/liveness.ts`
-- [ ] Port (163). This fills in `verify_state`, currently stubbed as `'unknown'`.
-- [ ] A testimonial whose original is gone stops rendering on the wall — assert it
-- [ ] `unknown` is never treated as a negative signal
+### 5. Liveness — `lib/server/liveness.ts` — DONE
+- [x] Ported (163). `verify_state` is now real rather than stubbed as `'unknown'`.
+- [x] A testimonial whose original is gone stops rendering on the wall — asserted
+- [x] `unknown` is never treated as a negative signal, and writes nothing at all
+- [x] Browser suite `verify-liveness.mjs` (11 assertions, includes health)
 
-### 6. Health — `api/health`
-- [ ] Port. Cheap, do it whenever there is a spare moment.
+### 6. Health — `api/health` — DONE
+- [x] Ported, with per-check reporting and 503 when unhealthy.
 
 ## When the checklist is complete
 
@@ -113,6 +115,11 @@ Delete the Routine (`mcp__Claude_Code_Remote__list_triggers` → `delete_trigger
 not fire again tomorrow, and leave a short summary as the final commit.
 
 ## Progress log
+
+**ALL ITEMS COMPLETE — please pause this Routine.** Every checklist item above is done and
+the gate is green at 201 assertions across two consecutive runs. The Routine is a daily cron
+and will fire again tomorrow morning unless paused; this run has no MCP tools and cannot
+delete it.
 
 Append one line per firing: what was attempted, what landed, what broke.
 
@@ -156,3 +163,15 @@ Append one line per firing: what was attempted, what landed, what broke.
   testimonials nobody can reach. One test-infrastructure fix: the admin suite deletes an
   account, so it now mints a disposable one through a dev-gated route instead of consuming a
   seeded account the org and settings suites depend on — suites share one database.
+- **Run 3 (02:41Z / 03:41Z)** — Items 4, 5 and 6 done; checklist complete. Avatar proxy
+  (13 assertions), liveness + health (11), gate at 201 across two consecutive runs.
+  Notes worth keeping: this container cannot reach the public internet from Bun's fetch, so
+  both the avatar CDN and X's oEmbed are exercised through dev-gated stub upstreams — every
+  security check still runs against them (https-only, type allowlist, size cap, header
+  pinning), only the network is faked. Three test-quality problems fixed rather than papered
+  over: a suite reused a wall an earlier suite had PAUSED (both now create their own); the
+  liveness sweep orders by `last_verified_at`, not `posted_at`, so the dev hook had to park
+  the other rows to make its target the one picked; and one assertion wrongly demanded
+  `checked === 0` after a retirement, when the sweep correctly moves on to other rows.
+  Also confirmed by accident, then asserted deliberately: a Google review returns `unknown`
+  and is never retired, because there is no reliable liveness check for that platform.

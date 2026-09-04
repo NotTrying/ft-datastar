@@ -59,6 +59,7 @@ const styles = (vars: Record<string, string>) =>
   `.sp-wall[data-sp-density=compact]{gap:8px;padding:8px}` +
   `.sp-card{margin:0;background:var(--sp-card);border:1px solid var(--sp-border);border-radius:var(--sp-radius);padding:14px}` +
   `.sp-head{display:flex;gap:9px;align-items:center;margin-bottom:8px}` +
+  `.sp-avatar{width:36px;height:36px;border-radius:99px;object-fit:cover;background:var(--sp-border)}` +
   `.sp-initials{width:36px;height:36px;border-radius:99px;background:var(--sp-border);color:var(--sp-muted);display:flex;align-items:center;justify-content:center;font-weight:600}` +
   `.sp-who{display:flex;flex-direction:column}.sp-name{font-weight:600}` +
   `.sp-handle,.sp-date{color:var(--sp-muted);font-size:12px}` +
@@ -79,8 +80,15 @@ function card(it: WallItemRow): string {
   // rel=noopener is not optional: the iframe is sandboxed with
   // allow-popups-to-escape-sandbox, so an opened tab must not keep a handle
   // back to this document.
+  // Proxied through us, never the platform CDN: hotlinking would leak every
+  // wall visitor's IP to X. The proxy takes a testimonial id, not a URL, so
+  // there is no user-supplied URL for it to be tricked into fetching.
+  const avatar = it.author_avatar
+    ? `<img class="sp-avatar" src="/api/v1/avatar/${esc(it.id)}" alt="" loading="lazy" ` +
+      `decoding="async" width="36" height="36">`
+    : `<span class="sp-initials" aria-hidden="true">${esc(initials(it.author_name, it.author_handle))}</span>`;
   return `<figure class="sp-card">` +
-    `<div class="sp-head"><span class="sp-initials" aria-hidden="true">${esc(initials(it.author_name, it.author_handle))}</span>` +
+    `<div class="sp-head">${avatar}` +
     `<span class="sp-who"><span class="sp-name">${esc(name)}</span>${handle}</span></div>` +
     `<blockquote class="sp-body">${esc(it.content)}</blockquote>` +
     `<figcaption class="sp-foot">${date}<a class="sp-link" href="${esc(it.post_url)}" ` +

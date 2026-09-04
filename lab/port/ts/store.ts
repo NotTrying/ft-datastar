@@ -26,7 +26,8 @@ export type WallRow = {
 };
 export type WallItemRow = {
   id: string; platform: string; content: string; post_url: string;
-  author_handle: string | null; author_name: string | null; posted_at: number | null;
+  author_handle: string | null; author_name: string | null;
+  author_avatar: string | null; posted_at: number | null;
 };
 
 export type AdminUserRow = {
@@ -62,9 +63,11 @@ CREATE TABLE IF NOT EXISTS testimonial (
   post_url      TEXT NOT NULL,
   author_handle TEXT,
   author_name   TEXT,
+  author_avatar TEXT,
   content       TEXT NOT NULL,
   status        TEXT NOT NULL CHECK (status IN ('pending','approved','dismissed')),
   verify_state  TEXT NOT NULL DEFAULT 'unknown',
+  last_verified_at INTEGER,
   posted_at     INTEGER,
   created_at    INTEGER NOT NULL
 );
@@ -242,6 +245,54 @@ export class Store {
     return this.db.query<AdminUserRow, [string]>(
       `SELECT id, email, name, role, plan, banned, ban_reason, ban_expires, created_at
          FROM app_user WHERE id = ?`).get(id);
+  }
+
+  /**
+   * The least-recently-verified approved rows that are worth re-checking.
+   * NULLs sort first in SQLite, so never-checked rows come before merely-stale
+   * ones. Rows already marked `gone` are never selected.
+   */
+  dueForVerification(orgId: string | null, limit: number, cutoff: number):
+    { id: string; platform: string; post_url: string }[] {
+    const where = orgId ? "AND org_id = ?" : "";
+    const params: (string | number)[] = orgId ? [orgId, cutoff, limit] : [cutoff, limit];
+    return this.db.query<{ id: string; platform: string; post_url: string }, any>(`
+      SELECT id, platform, post_url FROM testimonial
+       WHERE status = 'approved' AND verify_state != 'gone' ${where}
+         AND (last_verified_at IS NULL OR last_verified_at < ?)
+       ORDER BY last_verified_at ASC LIMIT ?`).all(...params);
+  }
+
+  setPostUrl(id: string, postUrl: string, platform?: string) {
+    this.db.query(`UPDATE testimonial SET post_url = ?, post_id = ?, platform = coalesce(?, platform) WHERE id = ?`)
+      .run(postUrl, postUrl, platform ?? null, id);
+  }
+
+  /** Test scaffolding only: parks every other approved row so a sweep with
+   *  limit 1 is guaranteed to pick the row under test. The sweep orders by
+   *  last_verified_at ASC, which is not the same order as the dashboard's. */
+  parkOthers(orgId: string, keepId: string, at: number) {
+    this.db.query(`UPDATE testimonial SET last_verified_at = ?
+                    WHERE org_id = ? AND id != ? AND status = 'approved'`).run(at, orgId, keepId);
+  }
+
+  setVerifyState(id: string, state: string, at: number) {
+    this.db.query(`UPDATE testimonial SET verify_state = ?, last_verified_at = ? WHERE id = ?`)
+      .run(state, at, id);
+  }
+
+  verifyStateOf(id: string): { verify_state: string; last_verified_at: number | null } | null {
+    return this.db.query<{ verify_state: string; last_verified_at: number | null }, [string]>(
+      `SELECT verify_state, last_verified_at FROM testimonial WHERE id = ?`).get(id);
+  }
+
+  avatarFor(testimonialId: string): string | null {
+    return this.db.query<{ author_avatar: string | null }, [string]>(
+      `SELECT author_avatar FROM testimonial WHERE id = ?`).get(testimonialId)?.author_avatar ?? null;
+  }
+
+  setAvatar(testimonialId: string, url: string | null) {
+    this.db.query(`UPDATE testimonial SET author_avatar = ? WHERE id = ?`).run(url, testimonialId);
   }
 
   // ---- admin ----
@@ -550,7 +601,7 @@ export class Store {
   // it) and verify_state != 'gone' (the original still resolves).
   loadWallItems(orgId: string, max: number): WallItemRow[] {
     return this.db.query<WallItemRow, [string, number]>(`
-      SELECT id, platform, content, post_url, author_handle, author_name, posted_at
+      SELECT id, platform, content, post_url, author_handle, author_name, author_avatar, posted_at
         FROM testimonial
        WHERE org_id = ? AND status = 'approved' AND coalesce(verify_state,'unknown') != 'gone'
        ORDER BY posted_at DESC, created_at DESC LIMIT ?`)

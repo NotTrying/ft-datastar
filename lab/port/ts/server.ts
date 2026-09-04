@@ -13,6 +13,8 @@ import {
   renderProfile, renderSessions, renderMsg as renderSettingsMsg,
 } from "./settings.ts";
 import { isAdmin, isBanned, validateBan, renderAdminMsg, renderUsers } from "./admin.ts";
+import { serveAvatar, installStubUpstream } from "./avatar.ts";
+import { sweepLiveness, installStubLiveness } from "./liveness.ts";
 import {
   ensurePersonalOrg, canManage, validateInvite, inviteExpiry,
   renderOrgMsg, renderOrgSwitcher, renderMembers, renderInvites,
@@ -90,6 +92,59 @@ async function handle(req: Request): Promise<Response> {
   if (p === "/datastar.js") return file(`${SHARED}/datastar.js`, "text/javascript; charset=utf-8");
   if (p === "/styles.css") return file(`${SHARED}/styles.css`, "text/css; charset=utf-8");
   if (p === "/favicon.ico") return new Response(null, { status: 204 });
+
+  // Health check for uptime monitoring. 200 healthy, 503 unhealthy.
+  if (p === "/api/health" && req.method === "GET") {
+    const checks = { database: false, sessions: false };
+    try { store.listUsers(); checks.database = true; } catch { /* unhealthy */ }
+    try { store.listSessions("probe"); checks.sessions = true; } catch { /* unhealthy */ }
+    const healthy = checks.database && checks.sessions;
+    return new Response(JSON.stringify({
+      status: healthy ? "healthy" : "unhealthy",
+      timestamp: new Date().toISOString(),
+      checks,
+    }), { status: healthy ? 200 : 503,
+          headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  }
+
+  // Dev-only, gated on LAB_DEV=1. Points one approved testimonial at a URL the
+  // stub upstream recognises, and runs a liveness sweep synchronously, so the
+  // suite can assert each outcome instead of racing the background sweep.
+  if (p === "/dev/liveness" && process.env.LAB_DEV === "1") {
+    const owner = store.findUser("owner@example.com");
+    const orgId = owner ? store.orgsFor(owner.id)[0]?.id : null;
+    if (!orgId) return new Response("no org", { status: 400 });
+    const row = store.list(orgId, "approved")[0];
+    if (!row) return new Response("no approved testimonial", { status: 400 });
+
+    // The sweep orders by last_verified_at, not by posted_at, so park the other
+    // approved rows to make the row under test the one it picks.
+    store.parkOthers(orgId, row.id, Date.now());
+    const postUrl = url.searchParams.get("url");
+    if (postUrl) store.setPostUrl(row.id, postUrl, url.searchParams.get("platform") ?? undefined);
+    if (url.searchParams.get("reset") === "1") store.setVerifyState(row.id, "unknown", 0);
+
+    const result = url.searchParams.has("sweep")
+      ? await sweepLiveness(store, { orgId, limit: 1, staleAfterMs: 0 })
+      : null;
+    return new Response(JSON.stringify({ id: row.id, result, state: store.verifyStateOf(row.id) }),
+      { headers: { "content-type": "application/json" } });
+  }
+
+  // Dev-only, gated on LAB_DEV=1. Pins an avatar URL onto one approved
+  // testimonial and hands back its id, so the suite can exercise the proxy's
+  // accept and reject paths without a reachable CDN.
+  if (p === "/dev/set-avatar" && process.env.LAB_DEV === "1") {
+    const target = url.searchParams.get("url");
+    const owner = store.findUser("owner@example.com");
+    const orgId = owner ? store.orgsFor(owner.id)[0]?.id : null;
+    if (!orgId) return new Response("no org", { status: 400 });
+    const row = store.list(orgId, "approved")[0];
+    if (!row) return new Response("no approved testimonial", { status: 400 });
+    store.setAvatar(row.id, target);
+    return new Response(JSON.stringify({ id: row.id, url: target }),
+      { headers: { "content-type": "application/json" } });
+  }
 
   // Dev-only, gated on LAB_DEV=1 which no normal run sets. Mints a disposable
   // account so a suite that bans or deletes someone need not consume a seeded
@@ -171,9 +226,18 @@ async function handle(req: Request): Promise<Response> {
     // Per-request nonce: it is what allows the single inline stylesheet and
     // the single height script to run under an otherwise empty CSP.
     const nonce = crypto.randomUUID().replaceAll("-", "");
-    return new Response(renderWallHtml(w, items, nonce),
-      { headers: embedHeaders(nonce, parseAllowedDomains(w.allowed_domains)) });
+    const html = renderWallHtml(w, items, nonce);
+    // Verify a few of this wall's oldest-checked quotes, but never on the
+    // response path — the visitor waits for nothing. The original does the
+    // same through ctx.waitUntil.
+    void sweepLiveness(store, { orgId: found.orgId }).catch(() => {});
+    return new Response(html, { headers: embedHeaders(nonce, parseAllowedDomains(w.allowed_domains)) });
   }
+
+  // Public: the wall's <img> points here, never at the platform CDN, so a wall
+  // visitor's IP never reaches X.
+  const av = p.match(/^\/api\/v1\/avatar\/([^/]+)$/);
+  if (av && req.method === "GET") return serveAvatar(store, decodeURIComponent(av[1]!));
 
   const am = p.match(/^\/api\/v1\/walls\/([^/]+)$/);
   if (am && req.method === "GET") {
@@ -787,6 +851,7 @@ async function seed(): Promise<string> {
   }
   return user.id;
 }
+if (process.env.LAB_DEV === "1") { installStubUpstream(); installStubLiveness(); }
 await seed();
 
 const port = Number(process.env.PORT ?? 8083);
