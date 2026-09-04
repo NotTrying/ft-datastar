@@ -1,6 +1,6 @@
 // Datastar port of the social-proof dashboard. Web-standard fetch handler,
 // SQLite for storage, SSE for every update. No framework, no build step.
-import { readFile } from "node:fs/promises";
+import { rt } from "./runtime.ts";
 import { Store, STATUSES, Duplicate, type Status } from "./store.ts";
 import { validateManualTestimonial } from "./validate.ts";
 import { renderStats, renderTabs, renderList, renderMsg, esc } from "./render.ts";
@@ -25,8 +25,7 @@ import {
   currentUser, requireUser,
 } from "./auth.ts";
 
-const SHARED = process.env.LAB_SHARED ?? "../shared";
-const store = new Store(process.env.LAB_DB ?? "social-proof.db");
+const store = new Store(rt().env("LAB_DB") ?? "social-proof.db");
 
 // ---------- SSE ----------
 
@@ -72,11 +71,11 @@ async function readSignals(req: Request, url: URL) {
   return { tab, input: o };
 }
 
-const file = async (path: string, type: string) =>
-  new Response(await readFile(path), { headers: { "content-type": type } });
+const file = async (name: string, type: string) =>
+  new Response(await rt().readAsset(name), { headers: { "content-type": type } });
 
 async function basePage(name: string, subs: Record<string, string> = {}) {
-  let out = (await readFile(`${SHARED}/${name}`, "utf8")).replaceAll("__BACKEND__", "TypeScript");
+  let out = String(await rt().readAsset(name)).replaceAll("__BACKEND__", "TypeScript");
   for (const [k, v] of Object.entries(subs)) out = out.replace(k, v);
   return new Response(out, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
@@ -89,8 +88,8 @@ async function handle(req: Request): Promise<Response> {
   const secure = url.protocol === "https:";
 
   // ---- public ----
-  if (p === "/datastar.js") return file(`${SHARED}/datastar.js`, "text/javascript; charset=utf-8");
-  if (p === "/styles.css") return file(`${SHARED}/styles.css`, "text/css; charset=utf-8");
+  if (p === "/datastar.js") return file("datastar.js", "text/javascript; charset=utf-8");
+  if (p === "/styles.css") return file("styles.css", "text/css; charset=utf-8");
   if (p === "/favicon.ico") return new Response(null, { status: 204 });
 
   // Health check for uptime monitoring. 200 healthy, 503 unhealthy.
@@ -110,7 +109,7 @@ async function handle(req: Request): Promise<Response> {
   // Dev-only, gated on LAB_DEV=1. Points one approved testimonial at a URL the
   // stub upstream recognises, and runs a liveness sweep synchronously, so the
   // suite can assert each outcome instead of racing the background sweep.
-  if (p === "/dev/liveness" && process.env.LAB_DEV === "1") {
+  if (p === "/dev/liveness" && rt().env("LAB_DEV") === "1") {
     const owner = store.findUser("owner@example.com");
     const orgId = owner ? store.orgsFor(owner.id)[0]?.id : null;
     if (!orgId) return new Response("no org", { status: 400 });
@@ -134,7 +133,7 @@ async function handle(req: Request): Promise<Response> {
   // Dev-only, gated on LAB_DEV=1. Pins an avatar URL onto one approved
   // testimonial and hands back its id, so the suite can exercise the proxy's
   // accept and reject paths without a reachable CDN.
-  if (p === "/dev/set-avatar" && process.env.LAB_DEV === "1") {
+  if (p === "/dev/set-avatar" && rt().env("LAB_DEV") === "1") {
     const target = url.searchParams.get("url");
     const owner = store.findUser("owner@example.com");
     const orgId = owner ? store.orgsFor(owner.id)[0]?.id : null;
@@ -150,7 +149,7 @@ async function handle(req: Request): Promise<Response> {
   // account so a suite that bans or deletes someone need not consume a seeded
   // one the other suites depend on. PUBLIC by necessity — the caller is signed
   // out at the point it needs the account to exist.
-  if (p === "/dev/make-user" && process.env.LAB_DEV === "1") {
+  if (p === "/dev/make-user" && rt().env("LAB_DEV") === "1") {
     const email = (url.searchParams.get("email") ?? "").trim().toLowerCase();
     if (!email) return new Response("email required", { status: 400 });
     let u = store.findUser(email);
@@ -293,7 +292,7 @@ async function handle(req: Request): Promise<Response> {
     }
 
     const { tab, input } = await readSignals(req, url);
-    const origin = process.env.LAB_ORIGIN ?? url.origin;
+    const origin = rt().env("LAB_ORIGIN") ?? url.origin;
 
     // ---- walls (dashboard) ----
 
@@ -632,7 +631,7 @@ async function handle(req: Request): Promise<Response> {
     // "sent"; the second mints a disposable account so a suite that bans or
     // deletes someone does not have to consume a seeded one that other suites
     // depend on.
-    if (p === "/dev/last-otp" && process.env.LAB_DEV === "1")
+    if (p === "/dev/last-otp" && rt().env("LAB_DEV") === "1")
       return new Response(JSON.stringify(lastOtp ?? {}), { headers: { "content-type": "application/json" } });
 
 
@@ -851,9 +850,9 @@ async function seed(): Promise<string> {
   }
   return user.id;
 }
-if (process.env.LAB_DEV === "1") { installStubUpstream(); installStubLiveness(); }
+if (rt().env("LAB_DEV") === "1") { installStubUpstream(); installStubLiveness(); }
 await seed();
 
-const port = Number(process.env.PORT ?? 8083);
+const port = Number(rt().env("PORT") ?? 8083);
 console.log(`social-proof (Datastar/TypeScript) on http://localhost:${port}`);
 export default { port, fetch: handle };

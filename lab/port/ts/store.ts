@@ -1,7 +1,9 @@
 // SQLite store. Mirrors the shape of the D1 `testimonial` table the SvelteKit
 // app uses, including the unique index the dedupe check leans on.
-// `bun:sqlite` is built into the runtime — no dependency.
-import { Database } from "bun:sqlite";
+// The database comes from the runtime seam rather than an import: on Bun it is
+// the built-in `bun:sqlite` (no dependency), on Workers a Durable Object's
+// SQLite storage, whose API is likewise synchronous. See runtime.ts.
+import { rt, type SqliteLike } from "./runtime.ts";
 import type { ManualTestimonialRow } from "./validate.ts";
 import type { Mention } from "./scan.ts";
 
@@ -162,10 +164,18 @@ CREATE TABLE IF NOT EXISTS wall (
 );
 `;
 
+// Every ORDER BY below carries `id` as a final tiebreaker, and that is
+// load-bearing rather than tidy. Ordering on a timestamp alone is only a total
+// order if no two rows share one — true on Bun, where Date.now() advances
+// between inserts, and false on Cloudflare Workers, which freezes the clock
+// within a request so everything written by one request shares a timestamp
+// exactly. SQLite is then free to return tied rows in any order, and does:
+// the same query returned a different first row on consecutive calls, which is
+// how this was found. A total order costs nothing and removes the class.
 export class Store {
-  private db: Database;
+  private db: SqliteLike;
   constructor(path: string) {
-    this.db = new Database(path);
+    this.db = rt().openDatabase(path);
     this.db.run("PRAGMA busy_timeout = 5000");
     this.db.run(SCHEMA);
   }
@@ -189,7 +199,7 @@ export class Store {
       SELECT id, source, platform, post_url, author_handle, author_name,
              content, status, posted_at, created_at
         FROM testimonial WHERE org_id = ? AND status = ?
-       ORDER BY created_at DESC`).all(userId, status);
+       ORDER BY created_at DESC, id DESC`).all(userId, status);
   }
 
   insert(orgId: string, userId: string, id: string, r: ManualTestimonialRow, status: Status = "pending") {
@@ -260,7 +270,7 @@ export class Store {
       SELECT id, platform, post_url FROM testimonial
        WHERE status = 'approved' AND verify_state != 'gone' ${where}
          AND (last_verified_at IS NULL OR last_verified_at < ?)
-       ORDER BY last_verified_at ASC LIMIT ?`).all(...params);
+       ORDER BY last_verified_at ASC, id ASC LIMIT ?`).all(...params);
   }
 
   setPostUrl(id: string, postUrl: string, platform?: string) {
@@ -300,7 +310,7 @@ export class Store {
   listUsers(): AdminUserRow[] {
     return this.db.query<AdminUserRow, []>(
       `SELECT id, email, name, role, plan, banned, ban_reason, ban_expires, created_at
-         FROM app_user ORDER BY created_at DESC`).all();
+         FROM app_user ORDER BY created_at DESC, id DESC`).all();
   }
 
   setRole(id: string, role: "user" | "admin") {
@@ -361,7 +371,7 @@ export class Store {
     return this.db.query<SessionRow, [string, number]>(`
       SELECT token_hash, created_at, expires_at, user_agent
         FROM session WHERE user_id = ? AND expires_at > ?
-       ORDER BY created_at DESC`).all(userId, Date.now());
+       ORDER BY created_at DESC, token_hash DESC`).all(userId, Date.now());
   }
 
   // Revoke is scoped by user_id as well as the hash: one user must never be
@@ -422,7 +432,7 @@ export class Store {
     return this.db.query<OrgRow, [string]>(`
       SELECT o.id, o.name, o.slug, o.created_at FROM organization o
         JOIN member m ON m.organization_id = o.id
-       WHERE m.user_id = ? ORDER BY o.created_at`).all(userId);
+       WHERE m.user_id = ? ORDER BY o.created_at, o.id`).all(userId);
   }
 
   org(id: string): OrgRow | null {
@@ -434,7 +444,7 @@ export class Store {
     return this.db.query<MemberRow, [string]>(`
       SELECT m.id, m.user_id, m.role, m.created_at, u.email, u.name
         FROM member m JOIN app_user u ON u.id = m.user_id
-       WHERE m.organization_id = ? ORDER BY m.created_at`).all(orgId);
+       WHERE m.organization_id = ? ORDER BY m.created_at, m.id`).all(orgId);
   }
 
   roleIn(orgId: string, userId: string): string | null {
@@ -471,7 +481,7 @@ export class Store {
       SELECT i.id, i.organization_id, i.email, i.role, i.status, i.expires_at, o.name AS org_name
         FROM invitation i JOIN organization o ON o.id = i.organization_id
        WHERE i.organization_id = ? AND i.status = 'pending' AND i.expires_at > ?
-       ORDER BY i.created_at DESC`).all(orgId, Date.now());
+       ORDER BY i.created_at DESC, i.id DESC`).all(orgId, Date.now());
   }
 
   invite(id: string): InviteRow | null {
@@ -522,7 +532,7 @@ export class Store {
       SELECT h.id, h.platform, h.handle, h.last_scanned_at, h.last_post_id,
              (SELECT count(*) FROM testimonial t WHERE t.handle_id = h.id AND t.status='pending')  AS pending,
              (SELECT count(*) FROM testimonial t WHERE t.handle_id = h.id AND t.status='approved') AS approved
-        FROM monitored_handle h WHERE h.org_id = ? ORDER BY h.created_at`).all(userId);
+        FROM monitored_handle h WHERE h.org_id = ? ORDER BY h.created_at, h.id`).all(userId);
   }
 
   handleById(userId: string, id: string): HandleRow | null {
@@ -570,7 +580,7 @@ export class Store {
   listWalls(userId: string): WallRow[] {
     return this.db.query<WallRow, [string]>(
       `SELECT id, name, enabled, layout, theme, density, show_dates, max_items,
-              allowed_domains, css_vars FROM wall WHERE org_id = ? ORDER BY created_at`).all(userId);
+              allowed_domains, css_vars FROM wall WHERE org_id = ? ORDER BY created_at, id`).all(userId);
   }
 
   // A disabled wall is indistinguishable from a missing one.
@@ -604,7 +614,7 @@ export class Store {
       SELECT id, platform, content, post_url, author_handle, author_name, author_avatar, posted_at
         FROM testimonial
        WHERE org_id = ? AND status = 'approved' AND coalesce(verify_state,'unknown') != 'gone'
-       ORDER BY posted_at DESC, created_at DESC LIMIT ?`)
+       ORDER BY posted_at DESC, created_at DESC, id DESC LIMIT ?`)
       .all(orgId, Math.max(1, Math.min(max, 100)));
   }
 

@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "datastar-port",
+  "main": "dist/entry.mjs",
+  "compatibility_date": "2026-08-25",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "vars": {
+    // The seeded demo needs its dev-only routes: the verification suites drive
+    // the app through them, and the stubbed avatar/liveness upstreams stand in
+    // for the real ones. Everything here is fabricated data.
+    "LAB_DEV": "1"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "APP", "class_name": "App" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["App"] }]
+}

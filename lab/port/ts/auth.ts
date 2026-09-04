@@ -10,15 +10,16 @@
 //  2. Every signal on the page is sent with every request, so nothing
 //     sensitive may ever live in one. Sessions live in an HttpOnly cookie the
 //     page cannot read.
+import { rt } from "./runtime.ts";
 import type { Store } from "./store.ts";
 
 export const COOKIE = "sp_session";
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-// Bun ships argon2id; nothing to install.
-export const hashPassword = (pw: string) => Bun.password.hash(pw);
-export const verifyPassword = (pw: string, hash: string) =>
-  Bun.password.verify(pw, hash).catch(() => false);
+// Through the runtime seam: argon2id on Bun, PBKDF2-SHA256 via WebCrypto on
+// Workers, which has no argon2. See runtime.ts.
+export const hashPassword = (pw: string) => rt().hashPassword(pw);
+export const verifyPassword = (pw: string, hash: string) => rt().verifyPassword(pw, hash);
 
 // The cookie holds the raw token; the database holds only its SHA-256. A dump
 // of the session table therefore does not let anyone log in as anybody.
