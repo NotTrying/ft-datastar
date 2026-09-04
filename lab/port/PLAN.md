@@ -69,14 +69,15 @@ Two items in the original version of this list were wrong and have been dropped:
   cancels the org's Stripe subscription. A raw delete would leave a paying org billed after
   the user is gone. `user-cleanup.ts` belongs to the admin path, not here. Preserved.
 
-### 2. Organizations — `dashboard/settings/organization` + invites
+### 2. Organizations — `dashboard/settings/organization` + invites — DONE
 - [x] Port `organization/+page.server.ts` (56) + `+page.svelte` (260)
 - [x] Port `org-bootstrap.ts` (90): every user gets an org on first login
 - [x] Members list, roles, remove member, org switching
 - [x] Create + revoke invites; accept/decline flow at `/invite/{id}`
-- [ ] **Scope walls/handles/testimonials to the active org, not just the user** — the one
-      piece left. It touches every existing query and suite, so it is deliberately its own
-      commit rather than bolted onto the org work.
+- [x] **Scope walls/handles/testimonials to the active org, not just the user** — done.
+      Testimonials, handles, walls and the scan log now key off `org_id`; `user_id` stays on
+      the row as the author. The dedupe indexes moved with them. Sessions and accounts remain
+      user-scoped, which is correct.
 - [x] Browser suite `verify-org.mjs` (20 assertions)
 
 Transfer-ownership is not in the original and was dropped from this list.
@@ -129,3 +130,15 @@ Append one line per firing: what was attempted, what landed, what broke.
   client-side RPC call into better-auth (`authClient.organization.*`); under Datastar they
   are all ordinary server routes and the browser makes no API calls of its own.
   REMAINING for the next run: scope walls/handles/testimonials to the active org.
+- **Run 2 (00:41Z)** — Item 2 finished: every data table now keys off `org_id` rather than
+  `user_id`, with `user_id` kept as the author. 22 queries and every call site converted;
+  `tsc` located all nine call sites, which is the argument for the strict config. Six new
+  assertions prove the scoping actually works (a new org starts empty, an accepted member
+  sees the org's rows, switching restores them). Gate at 160.
+  Two test-quality problems fixed rather than papered over: (a) suites share ONE database in
+  check.sh, so assertions must be relative — `[2,2,1]` held standalone but not after the
+  earlier suites had added, approved and deleted rows; (b) a genuine race — the org switcher
+  redirects via a patched `<script>` back to the page it is already on, so `waitForURL`
+  resolves instantly and the next navigation aborts the redirect mid-flight. Waiting on the
+  real `load` event fixed it; verified across two consecutive full runs, since one green run
+  proved nothing here. check.sh now surfaces CRASH lines, not just FAIL.

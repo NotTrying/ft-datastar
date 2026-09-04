@@ -48,6 +48,7 @@ export class Duplicate extends Error {}
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS testimonial (
   id            TEXT PRIMARY KEY,
+  org_id        TEXT NOT NULL,
   user_id       TEXT NOT NULL,
   handle_id     TEXT,
   source        TEXT NOT NULL,
@@ -63,7 +64,7 @@ CREATE TABLE IF NOT EXISTS testimonial (
   created_at    INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS testimonial_dedupe
-  ON testimonial (user_id, platform, post_id);
+  ON testimonial (org_id, platform, post_id);
 
 CREATE TABLE IF NOT EXISTS app_user (
   id         TEXT PRIMARY KEY,
@@ -84,6 +85,7 @@ CREATE TABLE IF NOT EXISTS session (
 
 CREATE TABLE IF NOT EXISTS monitored_handle (
   id              TEXT PRIMARY KEY,
+  org_id          TEXT NOT NULL,
   user_id         TEXT NOT NULL,
   platform        TEXT NOT NULL,
   handle          TEXT NOT NULL,
@@ -92,13 +94,14 @@ CREATE TABLE IF NOT EXISTS monitored_handle (
   created_at      INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS handle_dedupe
-  ON monitored_handle (user_id, platform, handle);
+  ON monitored_handle (org_id, platform, handle);
 
 -- The original counts testimonials created this month against scansPerMonth.
 -- That under-counts scans that find nothing and over-counts manual additions,
 -- so this port logs scans properly. See README-SCAN.md.
 CREATE TABLE IF NOT EXISTS scan_log (
   id        TEXT PRIMARY KEY,
+  org_id    TEXT NOT NULL,
   user_id   TEXT NOT NULL,
   handle_id TEXT NOT NULL,
   at        INTEGER NOT NULL
@@ -132,6 +135,7 @@ CREATE TABLE IF NOT EXISTS invitation (
 
 CREATE TABLE IF NOT EXISTS wall (
   id              TEXT PRIMARY KEY,
+  org_id          TEXT NOT NULL,
   user_id         TEXT NOT NULL,
   name            TEXT NOT NULL,
   enabled         INTEGER NOT NULL DEFAULT 1,
@@ -157,7 +161,7 @@ export class Store {
   counts(userId: string): Record<Status, number> {
     const out = { pending: 0, approved: 0, dismissed: 0 } as Record<Status, number>;
     const rows = this.db.query<{ status: Status; n: number }, [string]>(
-      `SELECT status, count(*) AS n FROM testimonial WHERE user_id = ? GROUP BY status`,
+      `SELECT status, count(*) AS n FROM testimonial WHERE org_id = ? GROUP BY status`,
     ).all(userId);
     for (const r of rows) out[r.status] = r.n;
     return out;
@@ -165,24 +169,24 @@ export class Store {
 
   total(userId: string): number {
     return this.db.query<{ n: number }, [string]>(
-      `SELECT count(*) AS n FROM testimonial WHERE user_id = ?`).get(userId)!.n;
+      `SELECT count(*) AS n FROM testimonial WHERE org_id = ?`).get(userId)!.n;
   }
 
   list(userId: string, status: Status): Testimonial[] {
     return this.db.query<Testimonial, [string, string]>(`
       SELECT id, source, platform, post_url, author_handle, author_name,
              content, status, posted_at, created_at
-        FROM testimonial WHERE user_id = ? AND status = ?
+        FROM testimonial WHERE org_id = ? AND status = ?
        ORDER BY created_at DESC`).all(userId, status);
   }
 
-  insert(userId: string, id: string, r: ManualTestimonialRow, status: Status = "pending") {
+  insert(orgId: string, userId: string, id: string, r: ManualTestimonialRow, status: Status = "pending") {
     try {
       this.db.query(`
-        INSERT INTO testimonial (id, user_id, source, platform, post_id, post_url,
+        INSERT INTO testimonial (id, org_id, user_id, source, platform, post_id, post_url,
                                  author_handle, author_name, content, status, posted_at, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        id, userId, r.source, r.platform, r.postId, r.postUrl,
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        id, orgId, userId, r.source, r.platform, r.postId, r.postUrl,
         r.authorHandle, r.authorName, r.content, status,
         r.postedAt ? r.postedAt.getTime() : null, Date.now());
     } catch (e) {
@@ -194,7 +198,7 @@ export class Store {
   // Scoped by user_id as well as id: ownership is enforced in the WHERE
   // clause, not in a check above it.
   setStatus(userId: string, id: string, status: Status): boolean {
-    return this.db.query(`UPDATE testimonial SET status = ? WHERE id = ? AND user_id = ?`)
+    return this.db.query(`UPDATE testimonial SET status = ? WHERE id = ? AND org_id = ?`)
       .run(status, id, userId).changes > 0;
   }
 
@@ -384,14 +388,14 @@ export class Store {
 
   countHandles(userId: string): number {
     return this.db.query<{ n: number }, [string]>(
-      `SELECT count(*) AS n FROM monitored_handle WHERE user_id = ?`).get(userId)!.n;
+      `SELECT count(*) AS n FROM monitored_handle WHERE org_id = ?`).get(userId)!.n;
   }
 
-  addHandle(userId: string, handle: string) {
+  addHandle(orgId: string, userId: string, handle: string) {
     try {
       this.db.query(
-        `INSERT INTO monitored_handle (id, user_id, platform, handle, created_at) VALUES (?,?,?,?,?)`)
-        .run(crypto.randomUUID(), userId, "x", handle, Date.now());
+        `INSERT INTO monitored_handle (id, org_id, user_id, platform, handle, created_at) VALUES (?,?,?,?,?,?)`)
+        .run(crypto.randomUUID(), orgId, userId, "x", handle, Date.now());
     } catch (e) {
       if (String(e).toUpperCase().includes("UNIQUE")) throw new Duplicate();
       throw e;
@@ -403,7 +407,7 @@ export class Store {
       SELECT h.id, h.platform, h.handle, h.last_scanned_at, h.last_post_id,
              (SELECT count(*) FROM testimonial t WHERE t.handle_id = h.id AND t.status='pending')  AS pending,
              (SELECT count(*) FROM testimonial t WHERE t.handle_id = h.id AND t.status='approved') AS approved
-        FROM monitored_handle h WHERE h.user_id = ? ORDER BY h.created_at`).all(userId);
+        FROM monitored_handle h WHERE h.org_id = ? ORDER BY h.created_at`).all(userId);
   }
 
   handleById(userId: string, id: string): HandleRow | null {
@@ -412,8 +416,8 @@ export class Store {
 
   deleteHandle(userId: string, id: string): boolean {
     // Testimonials cascade in the original via FK; done explicitly here.
-    this.db.query(`DELETE FROM testimonial WHERE handle_id = ? AND user_id = ?`).run(id, userId);
-    return this.db.query(`DELETE FROM monitored_handle WHERE id = ? AND user_id = ?`)
+    this.db.query(`DELETE FROM testimonial WHERE handle_id = ? AND org_id = ?`).run(id, userId);
+    return this.db.query(`DELETE FROM monitored_handle WHERE id = ? AND org_id = ?`)
       .run(id, userId).changes > 0;
   }
 
@@ -422,20 +426,20 @@ export class Store {
       .run(Date.now(), lastPostId, id);
   }
 
-  logScan(userId: string, handleId: string) {
-    this.db.query(`INSERT INTO scan_log (id, user_id, handle_id, at) VALUES (?,?,?,?)`)
-      .run(crypto.randomUUID(), userId, handleId, Date.now());
+  logScan(orgId: string, userId: string, handleId: string) {
+    this.db.query(`INSERT INTO scan_log (id, org_id, user_id, handle_id, at) VALUES (?,?,?,?,?)`)
+      .run(crypto.randomUUID(), orgId, userId, handleId, Date.now());
   }
 
   scansThisMonth(userId: string): number {
     const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0);
     return this.db.query<{ n: number }, [string, number]>(
-      `SELECT count(*) AS n FROM scan_log WHERE user_id = ? AND at >= ?`).get(userId, d.getTime())!.n;
+      `SELECT count(*) AS n FROM scan_log WHERE org_id = ? AND at >= ?`).get(userId, d.getTime())!.n;
   }
 
   knownPostIds(userId: string, platform: string): Set<string> {
     return new Set(this.db.query<{ post_id: string }, [string, string]>(
-      `SELECT post_id FROM testimonial WHERE user_id = ? AND platform = ?`)
+      `SELECT post_id FROM testimonial WHERE org_id = ? AND platform = ?`)
       .all(userId, platform).map((r) => r.post_id));
   }
 
@@ -443,59 +447,59 @@ export class Store {
   // Note the asymmetry: dashboard reads are scoped by user_id, the public
   // read (loadWall) is not — the visitor is anonymous.
 
-  createWall(id: string, userId: string, name: string) {
-    this.db.query(`INSERT INTO wall (id, user_id, name, created_at) VALUES (?,?,?,?)`)
-      .run(id, userId, name, Date.now());
+  createWall(id: string, orgId: string, userId: string, name: string) {
+    this.db.query(`INSERT INTO wall (id, org_id, user_id, name, created_at) VALUES (?,?,?,?,?)`)
+      .run(id, orgId, userId, name, Date.now());
   }
 
   listWalls(userId: string): WallRow[] {
     return this.db.query<WallRow, [string]>(
       `SELECT id, name, enabled, layout, theme, density, show_dates, max_items,
-              allowed_domains, css_vars FROM wall WHERE user_id = ? ORDER BY created_at`).all(userId);
+              allowed_domains, css_vars FROM wall WHERE org_id = ? ORDER BY created_at`).all(userId);
   }
 
   // A disabled wall is indistinguishable from a missing one.
-  loadWall(id: string): { wall: WallRow; ownerId: string } | null {
-    const row = this.db.query<WallRow & { user_id: string }, [string]>(
-      `SELECT id, user_id, name, enabled, layout, theme, density, show_dates, max_items,
+  loadWall(id: string): { wall: WallRow; orgId: string } | null {
+    const row = this.db.query<WallRow & { org_id: string }, [string]>(
+      `SELECT id, org_id, name, enabled, layout, theme, density, show_dates, max_items,
               allowed_domains, css_vars FROM wall WHERE id = ?`).get(id);
     if (!row || !row.enabled) return null;
-    const { user_id, ...wall } = row;
-    return { wall, ownerId: user_id };
+    const { org_id, ...wall } = row;
+    return { wall, orgId: org_id };
   }
 
   setWallEnabled(userId: string, id: string, on: boolean): boolean {
-    return this.db.query(`UPDATE wall SET enabled = ? WHERE id = ? AND user_id = ?`)
+    return this.db.query(`UPDATE wall SET enabled = ? WHERE id = ? AND org_id = ?`)
       .run(on ? 1 : 0, id, userId).changes > 0;
   }
 
   setWallDomains(userId: string, id: string, domains: string[] | null): boolean {
-    return this.db.query(`UPDATE wall SET allowed_domains = ? WHERE id = ? AND user_id = ?`)
+    return this.db.query(`UPDATE wall SET allowed_domains = ? WHERE id = ? AND org_id = ?`)
       .run(domains === null ? null : JSON.stringify(domains), id, userId).changes > 0;
   }
 
   deleteWall(userId: string, id: string): boolean {
-    return this.db.query(`DELETE FROM wall WHERE id = ? AND user_id = ?`).run(id, userId).changes > 0;
+    return this.db.query(`DELETE FROM wall WHERE id = ? AND org_id = ?`).run(id, userId).changes > 0;
   }
 
   // Two filters carry the product's whole claim: `approved` (the owner chose
   // it) and verify_state != 'gone' (the original still resolves).
-  loadWallItems(ownerId: string, max: number): WallItemRow[] {
+  loadWallItems(orgId: string, max: number): WallItemRow[] {
     return this.db.query<WallItemRow, [string, number]>(`
       SELECT id, platform, content, post_url, author_handle, author_name, posted_at
         FROM testimonial
-       WHERE user_id = ? AND status = 'approved' AND coalesce(verify_state,'unknown') != 'gone'
+       WHERE org_id = ? AND status = 'approved' AND coalesce(verify_state,'unknown') != 'gone'
        ORDER BY posted_at DESC, created_at DESC LIMIT ?`)
-      .all(ownerId, Math.max(1, Math.min(max, 100)));
+      .all(orgId, Math.max(1, Math.min(max, 100)));
   }
 
-  insertScanned(userId: string, handleId: string, m: Mention) {
+  insertScanned(orgId: string, userId: string, handleId: string, m: Mention) {
     try {
       this.db.query(`
-        INSERT INTO testimonial (id, user_id, handle_id, source, platform, post_id, post_url,
+        INSERT INTO testimonial (id, org_id, user_id, handle_id, source, platform, post_id, post_url,
                                  author_handle, author_name, content, status, posted_at, created_at)
-        VALUES (?,?,?,'scan',?,?,?,?,?,?,'pending',?,?)`).run(
-        crypto.randomUUID(), userId, handleId, m.platform, m.postId, m.postUrl,
+        VALUES (?,?,?,?,'scan',?,?,?,?,?,?,'pending',?,?)`).run(
+        crypto.randomUUID(), orgId, userId, handleId, m.platform, m.postId, m.postUrl,
         m.authorHandle, m.authorName, m.content, m.postedAt.getTime(), Date.now());
     } catch (e) {
       if (String(e).toUpperCase().includes("UNIQUE")) throw new Duplicate();
@@ -504,7 +508,7 @@ export class Store {
   }
 
   remove(userId: string, id: string): boolean {
-    return this.db.query(`DELETE FROM testimonial WHERE id = ? AND user_id = ?`)
+    return this.db.query(`DELETE FROM testimonial WHERE id = ? AND org_id = ?`)
       .run(id, userId).changes > 0;
   }
 }

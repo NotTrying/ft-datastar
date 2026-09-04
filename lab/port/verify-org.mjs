@@ -67,6 +67,7 @@ try {
 
   await p2.click("text=Accept");
   await p2.waitForURL(u => new URL(u).pathname === "/org", T);
+  await p2.waitForLoadState("networkidle");
   ok.push(["accepting switches the invitee into that organisation",
     !(await p2.textContent("h1")).includes(ownName.trim())]);
   ok.push(["the invitee can now switch between two organisations",
@@ -74,7 +75,26 @@ try {
   ok.push(["a plain member is told they cannot invite",
     (await p2.textContent("body")).includes("Only an owner or admin can invite")]);
 
-  await p.reload({ waitUntil: "networkidle" });
+  // Data is scoped to the organisation, so an accepted member sees its rows —
+  // not the empty personal workspace they arrived from. Everything here is
+  // compared against what the OWNER currently sees rather than fixed numbers:
+  // check.sh runs every suite against one database, and the earlier suites
+  // have already added, approved, scanned and deleted rows by this point.
+  await p.goto(`${base}/`, { waitUntil: "networkidle" });
+  const ownerStats = JSON.stringify(await p.$$eval("#stats .stat b", ns => ns.map(n => +n.textContent)));
+  await p.goto(`${base}/handles`, { waitUntil: "networkidle" });
+  const ownerHandles = (await p.$$eval("#handles .handle .name", ns => ns.map(n => n.textContent))).sort();
+
+  await p2.goto(`${base}/`, { waitUntil: "networkidle" });
+  ok.push([`an accepted member sees the organisation's testimonials, not their own (${ownerStats})`,
+    JSON.stringify(await p2.$$eval("#stats .stat b", ns => ns.map(n => +n.textContent))) === ownerStats &&
+    ownerStats !== "[0,0,0]"]);
+  await p2.goto(`${base}/handles`, { waitUntil: "networkidle" });
+  ok.push([`and the same monitored handles (${ownerHandles.length})`,
+    JSON.stringify((await p2.$$eval("#handles .handle .name", ns => ns.map(n => n.textContent))).sort())
+      === JSON.stringify(ownerHandles)]);
+
+  await p.goto(`${base}/org`, { waitUntil: "networkidle" });
   ok.push(["the owner now sees two members", (await p.$$("#members .member")).length === 2]);
   ok.push(["the accepted invitation is no longer pending",
     (await p.textContent("#invites")).includes("No pending invitations")]);
@@ -99,6 +119,30 @@ try {
   ok.push(["creating an organisation switches into it and makes you its owner",
     (await p.textContent("#members")).includes("owner")]);
   ok.push(["the switcher now lists both", (await p.$$("#org-switcher .btn")).length === 2]);
+
+  // The whole point of the refactor: rows belong to an organisation, so a new
+  // one starts empty even though the same user owns both.
+  await p.goto(`${base}/`, { waitUntil: "networkidle" });
+  ok.push(["a newly created organisation starts with no testimonials",
+    JSON.stringify(await p.$$eval("#stats .stat b", ns => ns.map(n => +n.textContent))) === "[0,0,0]"]);
+  await p.goto(`${base}/handles`, { waitUntil: "networkidle" });
+  ok.push(["and no monitored handles", (await p.textContent("#handles")).includes("No handles yet")]);
+  await p.goto(`${base}/walls`, { waitUntil: "networkidle" });
+  ok.push(["and no walls", (await p.textContent("#walls")).includes("No walls yet")]);
+
+  // Switching back brings the original org's data with it.
+  await p.goto(`${base}/org`, { waitUntil: "networkidle" });
+  const buttons = await p.$$("#org-switcher .btn");
+  const target = [];
+  for (const btn of buttons) if ((await btn.textContent()).includes("workspace")) target.push(btn);
+  // The switcher redirects via a patched <script> back to /org — the page it is
+  // already on. waitForURL therefore resolves immediately, before the redirect
+  // has even fired, and the next navigation aborts it mid-flight. Wait for the
+  // real document load instead.
+  await Promise.all([p.waitForEvent("load"), target[0].click()]);
+  await p.goto(`${base}/`, { waitUntil: "networkidle" });
+  ok.push(["switching back restores the original organisation's data",
+    JSON.stringify(await p.$$eval("#stats .stat b", ns => ns.map(n => +n.textContent))) === ownerStats]);
 
   await p.screenshot({ path: shot, fullPage: true });
 } catch (e) { crash = e; }

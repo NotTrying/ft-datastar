@@ -52,11 +52,11 @@ const stream = (fn: (s: SSE) => void | Promise<void>, headers: Record<string, st
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function redraw(s: SSE, uid: string, tab: Status) {
-  const c = store.counts(uid);
+function redraw(s: SSE, orgId: string, tab: Status) {
+  const c = store.counts(orgId);
   s.patch(renderStats(c));
   s.patch(renderTabs(c, tab));
-  s.patch(renderList(store.list(uid, tab), tab, store.total(uid)));
+  s.patch(renderList(store.list(orgId, tab), tab, store.total(orgId)));
 }
 
 // ---------- signals in ----------
@@ -142,7 +142,7 @@ async function handle(req: Request): Promise<Response> {
     // frame. The customer's page shows nothing rather than our error.
     if (!found) return new Response("Not found", { status: 404 });
     const w = applyOverrides(found.wall, url.searchParams);
-    const items = store.loadWallItems(found.ownerId, w.max_items);
+    const items = store.loadWallItems(found.orgId, w.max_items);
     // Per-request nonce: it is what allows the single inline stylesheet and
     // the single height script to run under an otherwise empty CSP.
     const nonce = crypto.randomUUID().replaceAll("-", "");
@@ -164,7 +164,7 @@ async function handle(req: Request): Promise<Response> {
     if (origin) { headers["access-control-allow-origin"] = origin; headers["vary"] = "Origin"; }
     else if (allowed === null) headers["access-control-allow-origin"] = "*";
     const w = found.wall;
-    const items = store.loadWallItems(found.ownerId, w.max_items).map((it) => ({
+    const items = store.loadWallItems(found.orgId, w.max_items).map((it) => ({
       id: it.id, platform: it.platform, content: it.content, url: it.post_url,
       author: { handle: it.author_handle, name: it.author_name }, postedAt: it.posted_at,
     }));
@@ -177,13 +177,25 @@ async function handle(req: Request): Promise<Response> {
 
   // ---- protected ----
   return requireUser(store, req, async (uid) => {
+    // Resolved once per request. The session's pinned org is only honoured
+    // while the user is still a member of it — otherwise a removed member
+    // keeps reading the org they were removed from.
+    const rawTok = readCookie(req, COOKIE);
+    const hash = rawTok ? await tokenHash(rawTok) : "";
+    const pinnedOrg = store.activeOrg(hash);
+    const orgId = pinnedOrg && store.roleIn(pinnedOrg, uid)
+      ? pinnedOrg
+      : (store.orgsFor(uid)[0]?.id ?? null);
+    if (orgId !== pinnedOrg) store.setActiveOrg(hash, orgId);
+    // Every data route below is scoped to this org, never to the user.
+    const org = orgId!;
     if (p === "/" && req.method === "GET") {
-      const c = store.counts(uid);
+      const c = store.counts(org);
       return page("dashboard.html", {
         __EMAIL__: esc(store.emailFor(uid)),
         __STATS__: renderStats(c),
         __TABS__: renderTabs(c, "pending"),
-        __LIST__: renderList(store.list(uid, "pending"), "pending", store.total(uid)),
+        __LIST__: renderList(store.list(org, "pending"), "pending", store.total(org)),
       });
     }
 
@@ -195,7 +207,7 @@ async function handle(req: Request): Promise<Response> {
     if (p === "/walls" && req.method === "GET")
       return page("walls.html", {
         __EMAIL__: esc(store.emailFor(uid)),
-        __WALLS__: renderWalls(store.listWalls(uid), origin),
+        __WALLS__: renderWalls(store.listWalls(org), origin),
       });
 
     if (p === "/walls" && req.method === "POST") {
@@ -203,34 +215,17 @@ async function handle(req: Request): Promise<Response> {
       if (!name || [...name].length > 60)
         return stream((s) => s.patch(renderWallMsg("err", "Give the wall a name of up to 60 characters.")));
       const id = generateWallId();
-      store.createWall(id, uid, name);
+      store.createWall(id, org, uid, name);
       return stream((s) => {
         s.patch(renderWallMsg("ok", `Wall <code class="mono">${esc(id)}</code> created. Paste the snippet into your site.`));
         s.signals(`{wallName: ''}`);
-        s.patch(renderWalls(store.listWalls(uid), origin));
+        s.patch(renderWalls(store.listWalls(org), origin));
       });
     }
 
     // ---- organisation ----
 
-    const sessionHash = async () => {
-      const t = readCookie(req, COOKIE);
-      return t ? await tokenHash(t) : "";
-    };
-    // The session's active org is only honoured while the user is still a
-    // member of it. Without this check a removed member keeps reading the org
-    // they were removed from, because their session still points at it.
-    const activeOrgFor = async (hash: string) => {
-      const pinned = store.activeOrg(hash);
-      if (pinned && store.roleIn(pinned, uid)) return pinned;
-      const fallback = store.orgsFor(uid)[0]?.id ?? null;
-      if (pinned !== fallback) store.setActiveOrg(hash, fallback);
-      return fallback;
-    };
-
     if (p.startsWith("/org")) {
-      const hash = await sessionHash();
-      const orgId = await activeOrgFor(hash);
       const role = orgId ? store.roleIn(orgId, uid) : null;
 
       if (p === "/org" && req.method === "GET") {
@@ -376,7 +371,7 @@ async function handle(req: Request): Promise<Response> {
       try {
         store.addMember(`mem_${crypto.randomUUID().replaceAll("-", "")}`, inv.organization_id, uid, inv.role);
       } catch { /* already a member: accepting twice is harmless */ }
-      store.setActiveOrg(await sessionHash(), inv.organization_id);
+      store.setActiveOrg(hash, inv.organization_id);
       return sseRedirect("/org");
     }
 
@@ -384,8 +379,6 @@ async function handle(req: Request): Promise<Response> {
 
     const settingsPage = async () => {
       const u = store.userById(uid)!;
-      const tok = readCookie(req, COOKIE);
-      const hash = tok ? await tokenHash(tok) : "";
       return page("settings.html", {
         __EMAIL__: esc(u.email),
         __PROFILE__: renderProfile(u),
@@ -466,8 +459,6 @@ async function handle(req: Request): Promise<Response> {
 
     const sm = p.match(/^\/settings\/sessions\/([0-9a-f]{64})$/);
     if (sm && req.method === "DELETE") {
-      const tok = readCookie(req, COOKIE);
-      const hash = tok ? await tokenHash(tok) : "";
       const target = sm[1]!;
       // Revoking your own current session would sign you out mid-request.
       if (target === hash) return new Response("cannot revoke the current session", { status: 400 });
@@ -479,8 +470,6 @@ async function handle(req: Request): Promise<Response> {
     }
 
     if (p === "/settings/revoke-others" && req.method === "POST") {
-      const tok = readCookie(req, COOKIE);
-      const hash = tok ? await tokenHash(tok) : "";
       const n = store.revokeOtherSessions(uid, hash);
       return stream((s) => {
         s.patch(renderSettingsMsg("ok", `All other sessions revoked (${n})`));
@@ -498,34 +487,34 @@ async function handle(req: Request): Promise<Response> {
       const id = decodeURIComponent(wm[1]!);
       if (req.method === "PATCH") {
         const enabled = url.searchParams.get("enabled");
-        if (enabled !== null && !store.setWallEnabled(uid, id, enabled === "true"))
+        if (enabled !== null && !store.setWallEnabled(org, id, enabled === "true"))
           return new Response("not found", { status: 404 });
         if (url.searchParams.has("domains")) {
           // null (blank input) means unrestricted; that distinction is
           // load-bearing in isOriginAllowed.
-          if (!store.setWallDomains(uid, id, parseDomainInput(url.searchParams.get("domains") ?? "")))
+          if (!store.setWallDomains(org, id, parseDomainInput(url.searchParams.get("domains") ?? "")))
             return new Response("not found", { status: 404 });
         }
-        return stream((s) => s.patch(renderWalls(store.listWalls(uid), origin)));
+        return stream((s) => s.patch(renderWalls(store.listWalls(org), origin)));
       }
       if (req.method === "DELETE") {
-        if (!store.deleteWall(uid, id)) return new Response("not found", { status: 404 });
+        if (!store.deleteWall(org, id)) return new Response("not found", { status: 404 });
         return stream((s) => {
           s.patch(renderWallMsg("ok", "Wall deleted."));
-          s.patch(renderWalls(store.listWalls(uid), origin));
+          s.patch(renderWalls(store.listWalls(org), origin));
         });
       }
     }
 
     // A GET, and deliberately read-only: a GET is a CORS-simple request, so
     // anything that mutates must not be reachable by one.
-    if (p === "/testimonials" && req.method === "GET") return stream((s) => redraw(s, uid, tab));
+    if (p === "/testimonials" && req.method === "GET") return stream((s) => redraw(s, org, tab));
 
     if (p === "/testimonials" && req.method === "POST") {
       const result = validateManualTestimonial(input);
       if (!result.ok) return stream((s) => s.patch(renderMsg("err", esc(result.error))));
       try {
-        store.insert(uid, crypto.randomUUID(), result.row);
+        store.insert(org, uid, crypto.randomUUID(), result.row);
       } catch (e) {
         const msg = e instanceof Duplicate
           ? "You have already added that one." : "Could not save that. Try again.";
@@ -534,7 +523,7 @@ async function handle(req: Request): Promise<Response> {
       return stream((s) => {
         s.patch(renderMsg("ok", "Added. It is waiting in <strong>Pending</strong> for you to approve."));
         s.signals(`{content: '', authorName: '', authorHandle: '', sourceUrl: '', postedAt: '', tab: 'pending'}`);
-        redraw(s, uid, "pending");
+        redraw(s, org, "pending");
       });
     }
 
@@ -544,8 +533,8 @@ async function handle(req: Request): Promise<Response> {
       const lim = limitsFor(store.planFor(uid));
       return page("handles.html", {
         __EMAIL__: esc(store.emailFor(uid)),
-        __PLAN__: renderPlan(store.countHandles(uid), lim),
-        __HANDLES__: renderHandles(store.listHandles(uid)),
+        __PLAN__: renderPlan(store.countHandles(org), lim),
+        __HANDLES__: renderHandles(store.listHandles(org)),
       });
     }
 
@@ -553,11 +542,11 @@ async function handle(req: Request): Promise<Response> {
       const v = validateHandle(String(input.handle ?? ""));
       if (!v.ok) return stream((s) => s.patch(renderHandleMsg("err", esc(v.error))));
       const lim = limitsFor(store.planFor(uid));
-      if (!canUse(lim.maxHandles, store.countHandles(uid)))
+      if (!canUse(lim.maxHandles, store.countHandles(org)))
         return stream((s) => s.patch(renderHandleMsg("err",
           "Handle limit reached. Upgrade your plan to monitor more handles.")));
       try {
-        store.addHandle(uid, v.handle);
+        store.addHandle(org, uid, v.handle);
       } catch (e) {
         const msg = e instanceof Duplicate
           ? "You are already monitoring this handle" : "Could not add that handle. Try again.";
@@ -566,26 +555,26 @@ async function handle(req: Request): Promise<Response> {
       return stream((s) => {
         s.patch(renderHandleMsg("ok", `Now monitoring @${esc(v.handle)}.`));
         s.signals(`{handle: ''}`);
-        s.patch(renderPlan(store.countHandles(uid), lim));
-        s.patch(renderHandles(store.listHandles(uid)));
+        s.patch(renderPlan(store.countHandles(org), lim));
+        s.patch(renderHandles(store.listHandles(org)));
       });
     }
 
     const hm = p.match(/^\/handles\/([^/]+)$/);
     if (hm && req.method === "DELETE") {
-      if (!store.deleteHandle(uid, decodeURIComponent(hm[1]!)))
+      if (!store.deleteHandle(org, decodeURIComponent(hm[1]!)))
         return new Response("not found", { status: 404 });
       const lim = limitsFor(store.planFor(uid));
       return stream((s) => {
         s.patch(renderHandleMsg("ok", "Handle removed."));
-        s.patch(renderPlan(store.countHandles(uid), lim));
-        s.patch(renderHandles(store.listHandles(uid)));
+        s.patch(renderPlan(store.countHandles(org), lim));
+        s.patch(renderHandles(store.listHandles(org)));
       });
     }
 
     // POST, not GET: a GET is a CORS-simple request, and this mutates.
     if (p === "/scan" && req.method === "POST") {
-      const h = store.handleById(uid, url.searchParams.get("id") ?? "");
+      const h = store.handleById(org, url.searchParams.get("id") ?? "");
       if (!h) return new Response("handle not found", { status: 404 });
       const lim = limitsFor(store.planFor(uid));
 
@@ -595,12 +584,12 @@ async function handle(req: Request): Promise<Response> {
           `<div id="scan-feed" class="scan-feed"></div><div id="scan-summary"></div></div>`);
         s.signals(`{_scanning: true}`);
         try {
-          if (!canUse(lim.scansPerMonth, store.scansThisMonth(uid))) {
+          if (!canUse(lim.scansPerMonth, store.scansThisMonth(org))) {
             s.patch(`<div id="scan-status" class="alert err">Monthly scan limit reached. ` +
               `Upgrade your plan for more scans.</div>`);
             return;
           }
-          store.logScan(uid, h.id);
+          store.logScan(org, uid, h.id);
           const step = (msg: string) =>
             s.patch(`<div id="scan-status" class="muted small">${esc(msg)}</div>`);
 
@@ -609,8 +598,8 @@ async function handle(req: Request): Promise<Response> {
           if (req.signal?.aborted) return;
 
           const { mentions, newestId } = searchMentions(h.handle, h.last_post_id);
-          const known = store.knownPostIds(uid, "x");
-          let stored = store.total(uid);
+          const known = store.knownPostIds(org, "x");
+          let stored = store.total(org);
           step(`Found ${mentions.length} mentions. Checking them against what you already have…`);
 
           let added = 0, skippedDupe = 0, skippedCap = 0;
@@ -625,7 +614,7 @@ async function handle(req: Request): Promise<Response> {
               // skipped, rather than failing the whole scan.
               verdict = "over plan cap"; cls = "capped"; skippedCap++;
             } else {
-              try { store.insertScanned(uid, h.id, m); verdict = "added to Pending"; cls = "new"; added++; stored++; }
+              try { store.insertScanned(org, uid, h.id, m); verdict = "added to Pending"; cls = "new"; added++; stored++; }
               catch { verdict = "already stored"; cls = "dupe"; skippedDupe++; }
             }
 
@@ -640,7 +629,7 @@ async function handle(req: Request): Promise<Response> {
           if (skippedCap > 0) summary += ` &middot; ${skippedCap} skipped (plan cap)`;
           s.patch(`<div id="scan-status" class="muted small">Done.</div>`);
           s.patch(`<div id="scan-summary"><div class="alert ok" role="status">${summary}</div></div>`);
-          s.patch(renderHandles(store.listHandles(uid)));
+          s.patch(renderHandles(store.listHandles(org)));
         } finally {
           s.signals(`{_scanning: false}`);
         }
@@ -654,12 +643,12 @@ async function handle(req: Request): Promise<Response> {
         const status = url.searchParams.get("status");
         if (status !== "approved" && status !== "dismissed")
           return new Response('status must be "approved" or "dismissed"', { status: 400 });
-        if (!store.setStatus(uid, id, status)) return new Response("not found", { status: 404 });
-        return stream((s) => redraw(s, uid, tab));
+        if (!store.setStatus(org, id, status)) return new Response("not found", { status: 404 });
+        return stream((s) => redraw(s, org, tab));
       }
       if (req.method === "DELETE") {
-        if (!store.remove(uid, id)) return new Response("not found", { status: 404 });
-        return stream((s) => redraw(s, uid, tab));
+        if (!store.remove(org, id)) return new Response("not found", { status: 404 });
+        return stream((s) => redraw(s, org, tab));
       }
     }
     return new Response("not found", { status: 404 });
@@ -675,14 +664,21 @@ async function seed(): Promise<string> {
     store.createUser(id, "owner@example.com", await hashPassword("correct-horse-battery"), "Sam Owner");
     user = store.findUser("owner@example.com")!;
   }
-  // Pro so the handle and testimonial caps are exercised but not in the way.
-  store.setPlan(user.id, "pro");
-  try { store.addHandle(user.id, "acmetools"); } catch { /* already there */ }
-  // A second account, so the "email is already taken" path is reachable.
+  // A second account, so the "email is already taken" and invitation paths are
+  // reachable without inventing a signup flow.
   if (!store.findUser("other@example.com"))
     store.createUser(crypto.randomUUID(), "other@example.com",
       await hashPassword("correct-horse-battery"), "Other Person");
-  if (store.total(user.id) > 0) return user.id;
+
+  // Seeded rows are org-scoped, so the personal org has to exist before any of
+  // them. In a normal run sign-in creates it; seeding just gets there first.
+  const orgId = ensurePersonalOrg(store, { id: user.id, email: "owner@example.com", name: "Sam Owner" });
+  if (store.total(orgId) > 0) return user.id;
+
+  // Pro so the handle and testimonial caps are exercised but not in the way.
+  store.setPlan(user.id, "pro");
+  try { store.addHandle(orgId, user.id, "acmetools"); } catch { /* already there */ }
+
   const d = (s: string) => new Date(s);
   const rows: [string, string, string, string, string, string, Date, Status][] = [
     ["x", "https://x.com/janes/status/1", "janesmith", "Jane Smith", "Sold our house in nine days and answered the phone every time.", "scan", d("2026-07-14"), "pending"],
@@ -692,7 +688,7 @@ async function seed(): Promise<string> {
     ["x", "https://x.com/spam/status/5", "linkfarm22", "", "check out my crypto course link in bio", "scan", d("2026-06-01"), "dismissed"],
   ];
   for (const [platform, urlStr, handle, name, content, source, postedAt, status] of rows) {
-    store.insert(user.id, crypto.randomUUID(), {
+    store.insert(orgId, user.id, crypto.randomUUID(), {
       source: source as "manual", platform, postId: urlStr, postUrl: urlStr,
       authorHandle: handle || null, authorName: name || null, content, postedAt,
     }, status);

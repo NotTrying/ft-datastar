@@ -47,7 +47,7 @@ for suite in $BOTH_SUITES; do
     if out=$(bun "$suite.mjs" "http://localhost:$port" "/tmp/chk-$suite-$name.png" 2>&1); then
       echo "$(grep -c PASS <<<"$out") passed"
     else
-      echo "FAILED"; grep -E "FAIL|problem" <<<"$out" | sed 's/^/      /'; FAIL=1
+      echo "FAILED"; grep -E "FAIL|CRASH|problem" <<<"$out" | sed 's/^/      /'; FAIL=1
     fi
   done
 done
@@ -56,7 +56,7 @@ for suite in $TS_ONLY_SUITES; do
   if out=$(bun "$suite.mjs" "http://localhost:8103" "/tmp/chk-$suite-TS.png" 2>&1); then
     echo "$(grep -c PASS <<<"$out") passed"
   else
-    echo "FAILED"; grep -E "FAIL|problem" <<<"$out" | sed 's/^/      /'; FAIL=1
+    echo "FAILED"; grep -E "FAIL|CRASH|problem" <<<"$out" | sed 's/^/      /'; FAIL=1
   fi
 done
 
