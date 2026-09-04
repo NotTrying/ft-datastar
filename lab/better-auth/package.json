@@ -1,0 +1,14 @@
+{
+  "name": "datastar-better-auth",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun server.ts"
+  },
+  "dependencies": {
+    "better-auth": "1.7.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workspace &middot; Datastar + better-auth</title>
+<script type="module" src="/datastar.js"></script>
+<link rel="stylesheet" href="/styles.css"></head>
+<body data-signals="{_busy: false}">
+<div class="shell">
+  <nav class="top">
+    <span class="links"><strong>Datastar + better-auth</strong></span>
+    <span class="who">Signed in as <strong>__EMAIL__</strong>
+      <button class="btn sm" data-on:click="@post('/logout')">Sign out</button></span>
+  </nav>
+  <header><h1>__NAME__</h1>
+    <p class="muted">Session read server-side; the browser never sees a token
+      <span class="badge">better-auth 1.7.2</span></p></header>
+
+  <div id="org-msg"></div>
+  <section class="card pad">
+    <h2>Organisations</h2>
+    __ORGS__
+    <form data-on:submit__prevent="@post('/org')" data-indicator:_busy style="margin-top:14px">
+      <div class="row">
+        <label class="grow"><span>New organisation</span>
+          <input type="text" data-bind:org-name placeholder="Acme Tools"></label>
+        <button type="submit" class="btn primary" data-attr:disabled="$_busy || !$orgName">Create</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card pad">
+    <h2>Invite someone</h2>
+    <form data-on:submit__prevent="@post('/org/invite')">
+      <div class="row">
+        <label class="grow"><span>Email</span>
+          <input type="email" data-bind:invite-email placeholder="colleague@example.com"></label>
+        <button type="submit" class="btn primary" data-attr:disabled="!$inviteEmail">Send invite</button>
+      </div>
+    </form>
+  </section>
+</div></body></html>
