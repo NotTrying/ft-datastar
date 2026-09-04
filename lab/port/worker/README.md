@@ -6,6 +6,9 @@ rewritten**: thirteen of the fourteen files are byte-identical to the Bun build,
 and the port's whole verification suite — 128 assertions — passes against
 `workerd`.
 
+**Live:** https://datastar-port.azvk.workers.dev — sign in with
+`owner@example.com` / `correct-horse-battery`.
+
 ## Build and run
 
 ```sh
