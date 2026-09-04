@@ -64,10 +64,13 @@ query returned a different first row on consecutive calls. Every `ORDER BY` in
 between inserts, which is why nothing here ever failed on Bun; the fragility was
 always in the code, and only a different clock exposed it.
 
-## The demo is seeded and dev-gated
+## The demo is seeded, and the dev routes are off
 
-`LAB_DEV=1` is set, which exposes `/dev/*` routes (seed a user, read the last
-OTP, drive the liveness sweep, stub the avatar and oEmbed upstreams). The
-verification suites drive the app through them and every row is fabricated. It
-is a demo, not a tenant: do not put anything real in it, and turn `LAB_DEV` off
-if it ever needs to be more than that.
+The port carries `/dev/*` routes that the verification suites drive: one seeds a
+user, one returns the last OTP, one triggers the liveness sweep, one pins an
+avatar. Two of those together walk straight past the login, so they are gated on
+`LAB_DEV=1` — set for `wrangler dev`, and **not set on the deployment**. There
+they 404.
+
+The data is still fabricated and the account is shared, so it is a demo, not a
+tenant: do not put anything real in it.

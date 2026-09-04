@@ -5,12 +5,11 @@
   "compatibility_date": "2026-08-25",
   "workers_dev": true,
   "observability": { "enabled": true },
-  "vars": {
-    // The seeded demo needs its dev-only routes: the verification suites drive
-    // the app through them, and the stubbed avatar/liveness upstreams stand in
-    // for the real ones. Everything here is fabricated data.
-    "LAB_DEV": "1"
-  },
+  // No LAB_DEV. Setting it to "1" opens the /dev/* routes the verification
+  // suites drive — including one that creates an account and one that returns
+  // the last OTP, which together walk straight past the login. That is fine
+  // against a local server and not fine on a public URL, so the deployment
+  // runs without it and the suites run against `wrangler dev` instead.
   "durable_objects": {
     "bindings": [{ "name": "APP", "class_name": "App" }]
   },
